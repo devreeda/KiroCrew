@@ -189,7 +189,31 @@ def _url_payload_command(n: int) -> str:
 #: safe to withhold, and window classification with whole-run context that exempts
 #: only windows sharing ≥ 24 bytes with that id while every other positive window
 #: redacts each piece it touches. One mechanism, no new pass.
-_PACKAGE_LINE_BUDGET = 28_551
+#: Raised for the git-publish floor's opaque-preverb detector in
+#: ``shell_normalizer``: a frozenset of git global flags, a glob-char set, and
+#: two predicates (one classifying a single word as a plain literal or an opaque
+#: expansion/glob/redirect — including a ``$``/backtick expansion inside double
+#: quotes, which bash still runs — one walking a git segment to the subcommand
+#: and dequoting each word so a quoted flag is not read as the subcommand), plus
+#: a four-line third pass wired into ``_is_git_publish`` in ``argv_floor``. The
+#: detection lives in ``shell_normalizer`` beside the splitter and quote machine
+#: it reuses, so the capped ``argv_floor`` stays within its per-file cap; no new
+#: matching rule and no threshold moved.
+#: Raised for the git-publish floor's opaque-preverb detector in
+#: ``shell_normalizer``: the full set of git global value-taking options, a
+#: glob-char set, and three predicates — one classifying a single word as a
+#: plain literal or an opaque expansion/glob/redirect (including a ``$``/backtick
+#: expansion inside double quotes, which bash still runs); one resolving a
+#: command-word token to git across the bare, path, quoted and ``$``-quoted
+#: (``$'git'``) spellings bash hands to exec; and one walking a git segment to
+#: the subcommand that skips a leading run of negations, assignments and
+#: redirections to find the real command word, then dequotes each word so a
+#: quoted flag is not read as the subcommand — plus a four-line third pass wired
+#: into ``_is_git_publish`` in ``argv_floor``. The detection lives in
+#: ``shell_normalizer`` beside the splitter and quote machine it reuses, so the
+#: capped ``argv_floor`` stays within its per-file cap; no new matching rule and
+#: no threshold moved.
+_PACKAGE_LINE_BUDGET = 28_753
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

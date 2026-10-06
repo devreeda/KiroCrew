@@ -208,6 +208,158 @@ class TestIsGitPublishDetection:
         assert _is_git_publish("echo $git is set") is False
 
 
+class TestOpaqueWordBeforeSubcommand:
+    """An unquoted expansion that EVAPORATES before the subcommand.
+
+    ``git ${UNSET} push origin main`` / ``git $(echo '') push origin main`` are
+    the shape the empty-word closure does not reach: the interposed word is
+    non-empty in the SOURCE text (``${unset}``, ``$(echo``), so the verb-anchored
+    regex and the normalizer subcommand-seek both stop one token short, yet the
+    shell REMOVES the word at run time and git really pushes to the protected
+    branch. The floor refuses to verify rather than modelling expansion: when a
+    segment's COMMAND WORD is ``git`` and any non-plain word (unquoted expansion,
+    command substitution, glob, redirection) sits before or at the subcommand
+    position, the push is unverifiable and it is denied.
+    """
+
+    def test_the_filed_spellings_are_detected(self) -> None:
+        P = "pus" + "h"
+        for cmd in (
+            "git ${UNSET} %s origin main" % P,
+            "git $(echo '') %s origin main" % P,
+            "git -c x=y ${UNSET} %s origin main" % P,
+            "git $A$B %s origin main" % P,
+            "git ${X:-${Y}} %s origin main" % P,
+            "git `echo` %s origin main" % P,
+        ):
+            assert _is_git_publish(cmd) is True, cmd
+
+    def test_the_filed_spellings_are_denied_end_to_end(self) -> None:
+        P = "pus" + "h"
+        for cmd in (
+            "git ${UNSET} %s origin main" % P,
+            "git $(echo '') %s origin main" % P,
+            "git -c x=y ${UNSET} %s origin main" % P,
+            # a redirection before the subcommand, and a glob subcommand
+            "git >out %s origin main" % P,
+            "git p* origin main",
+            # the benign-sibling-then-opaque-protected-push compound
+            "%s origin feat; git ${U} %s origin main" % (PUSH, P),
+        ):
+            reason = is_denied(cmd)
+            assert reason is not None and reason.startswith("Blocked by security policy"), cmd
+
+    def test_the_accepted_fail_safe_cost_is_denied(self) -> None:
+        """The accepted collateral: a non-plain word before the subcommand of a
+        ``git`` segment is refused even for a non-push verb (``git -c $EVIL
+        status``), because its run-time value cannot be verified."""
+        for cmd in ("git $X status", "git -c $EVIL status", "git ${F} fetch origin main"):
+            assert is_denied(cmd) is not None, cmd
+
+    def test_a_mention_or_non_git_command_word_is_untouched(self) -> None:
+        """The command-word check keeps ordinary commands that merely MENTION
+        git allowed -- the false-refusals the review lane enumerated."""
+        for cmd in (
+            "command -v git >/dev/null",
+            "grep git *.py",
+            'exec git "$@"',
+            "which git",
+        ):
+            assert is_denied(cmd) is None, cmd
+
+    def test_plain_git_usage_stays_allowed(self) -> None:
+        """A git segment with NO opaque word before the subcommand is left to
+        the ordinary passes: an expansion/glob/redirect AFTER the subcommand is
+        an argument, not a pre-verb word, and does not trip this path."""
+        P = "pus" + "h"
+        for cmd in (
+            "git status",
+            "git log --oneline -5",
+            "git fetch origin main",
+            "git %s origin my-feature" % P,
+            "git -c user.name=x %s origin my-feature" % P,
+            "git -C /tmp/repo %s origin my-feature" % P,
+            "git status > out.txt",  # redirect AFTER the subcommand
+            "git %s origin my-feature 2>/dev/null" % P,
+            "git add *.py",  # glob is an ARGUMENT to add
+            "git log --grep $PATTERN",  # expansion AFTER the subcommand
+        ):
+            assert is_denied(cmd) is None, cmd
+
+    def test_a_quoted_expansion_before_the_subcommand_is_a_literal(self) -> None:
+        """A SINGLE-quoted or escaped word is handed to git verbatim, so it is
+        not a pre-verb expansion and the plain-usage path applies — the quoted
+        ``'-c'`` is still an ordinary flag, and a single-quoted ``$X`` or an
+        escaped ``\\$`` is a literal."""
+        P = "pus" + "h"
+        assert is_denied("git '-c' core.pager=cat %s origin my-feature" % P) is None
+        assert is_denied("git '$NOTEXPANDED' %s origin my-feature" % P) is None
+        assert is_denied('git "feature-\\$x" %s origin my-feature' % P) is None
+
+    def test_a_quoted_flag_is_not_mistaken_for_the_subcommand(self) -> None:
+        """A quoted global flag must be classified as the flag it is, so the
+        walk does not stop at it and miss a later opaque word: ``git '-c'
+        core.pager=cat $(true) push origin main`` runs git with ``$(true)``
+        removed, so the push is unverifiable."""
+        P = "pus" + "h"
+        assert is_denied("git '-c' core.pager=cat $(true) %s origin main" % P) is not None
+
+    def test_a_double_quoted_expansion_is_opaque(self) -> None:
+        """Double quotes do NOT suspend expansion: an unescaped ``$`` or
+        backtick inside ``"..."`` is an expansion bash still runs, so a
+        pre-subcommand one is opaque. ``git "$(printf push)" origin main`` and
+        ``git "${UNSET}" push origin main`` both run a protected push."""
+        P = "pus" + "h"
+        for cmd in (
+            'git "$(printf %s)" origin main' % P,
+            'git "${UNSET}" %s origin main' % P,
+            'git "`echo`" %s origin main' % P,
+        ):
+            assert is_denied(cmd) is not None, cmd
+        # A double-quoted plain word with no expansion is still a literal.
+        assert is_denied('git "literal-ref" %s origin my-feature' % P) is None
+
+    def test_a_leading_redirection_or_assignment_does_not_hide_git(self) -> None:
+        """The command word is found AFTER a leading run of assignments and
+        redirections, so a leading redirect does not get mistaken for the
+        program: ``>/dev/null git $(true) push origin main`` really runs
+        ``git push origin main``."""
+        P = "pus" + "h"
+        for cmd in (
+            ">/dev/null git $(true) %s origin main" % P,
+            "2>/dev/null git ${U} %s origin main" % P,
+            "> out git $(true) %s origin main" % P,  # bare redirect + separate target
+            "VAR=x git ${U} %s origin main" % P,
+            "VAR=x 2>&1 git $(true) %s origin main" % P,
+        ):
+            assert is_denied(cmd) is not None, cmd
+        # A leading prefix before an ordinary feature push or a non-git command
+        # word stays allowed.
+        for cmd in (
+            ">/dev/null git %s origin my-feature" % P,
+            "VAR=x git %s origin my-feature" % P,
+            ">/dev/null grep git *.py",
+        ):
+            assert is_denied(cmd) is None, cmd
+
+    def test_ansi_c_git_shell_negation_and_global_value_options(self) -> None:
+        """The command word is recognised through an ANSI-C ``$'git'`` spelling
+        and after a leading ``!`` negation, and a git global VALUE-option
+        consumes its separate operand so the opaque word after it is still
+        reached: all three forms run a protected push and must deny."""
+        P = "pus" + "h"
+        for cmd in (
+            "$'git' $(true) %s origin main" % P,  # ANSI-C command word
+            "! git $(true) %s origin main" % P,  # shell negation prefix
+            "git --attr-source HEAD $(true) %s origin main" % P,  # value-option operand
+            "git --config-env=X ${U} %s origin main" % P,
+            "! $'git' --attr-source HEAD ${U} %s origin main" % P,  # combined
+        ):
+            assert is_denied(cmd) is not None, cmd
+        # A leading negation before a non-git command word stays allowed.
+        assert is_denied("! grep git *.py") is None
+
+
 @pytest.fixture
 def captured_sel_events(monkeypatch):
     """Capture SEL events without real I/O (isolate the ambient forensic log)."""

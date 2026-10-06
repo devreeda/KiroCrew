@@ -2918,6 +2918,192 @@ def _split_shell_words(segment: str) -> list[str]:
     return words
 
 
+# Git global flags that consume a separate argument token (they appear between
+# ``git`` and the subcommand). Shared by the opaque-preverb detector below and
+# by ``argv_floor._is_git_push_via_normalizer``'s subcommand seek. These are the
+# git global options that take a SEPARATE value word; a value given with ``=``
+# (``--git-dir=/x``) is self-contained and is matched by the ``=`` check in the
+# seek, not by membership here. The whole set is listed, not just ``-c``/``-C``,
+# so an option's value word is never mistaken for the subcommand.
+_GIT_ARG_FLAGS = frozenset(
+    {
+        "-c",
+        "-C",
+        "--git-dir",
+        "--work-tree",
+        "--namespace",
+        "--exec-path",
+        "--config-env",
+        "--attr-source",
+        "--super-prefix",
+    }
+)
+
+#: Glob metacharacters the shell expands against the filesystem BEFORE git runs,
+#: so the word that reaches git is not the word in the source text.
+_PREVERB_GLOB_CHARS = frozenset("*?[")
+
+
+def _resolves_to_git(token: str) -> bool:
+    """True when *token* in command-word position names the git program.
+
+    Reads the spellings bash resolves to the literal ``git`` before exec: the
+    bare word, a path whose basename is ``git`` (``/usr/bin/git``), a plain- or
+    double-quoted ``'git'`` / ``"git"``, and an ANSI-C or ``$"..."`` form
+    (``$'git'`` / ``$"git"``) — the latter two keep a leading ``$`` after
+    :func:`_dequote_token`, which bash strips, so the ``$``-before-a-quote is
+    peeled here before dequoting. A program-position EXPANSION (``$GIT``,
+    ``${GIT}``, ``$(echo git)``) is deliberately NOT resolved here — that is the
+    publish floor's substitution-program regex's job.
+    """
+    base = _cut_at_operator(token)
+    # Peel a ``$`` that precedes a quote (``$'git'`` / ``$"git"``): bash drops it
+    # and hands over the quoted literal.
+    if len(base) >= 2 and base[0] == "$" and base[1] in "'\"":
+        base = base[1:]
+    resolved = _dequote_token(base)
+    return resolved == "git" or os.path.basename(resolved) == "git"
+
+
+def _word_is_opaque_preverb(word: str) -> bool:
+    """True when *word*, read quote-aware, is not a plain literal between ``git``
+    and its subcommand.
+
+    "Plain" means git receives exactly the source-text characters: a flag
+    (``-c``), a flag value (``x=y``), or the subcommand. A word is OPAQUE when
+    the shell rewrites it before git starts — an unquoted expansion or command
+    substitution (``$X``, ``${X}``, ``$(cmd)``, `` `cmd` ``), an unquoted glob
+    (``p*``, ``pu[s]h``), a brace expansion (``{a,b}``, ``{1..3}``), or a
+    redirection (``>out``) — so its run-time value cannot be verified. A
+    fragment (unterminated quote / trailing escape) is opaque too: not runnable
+    as written, so failing closed loses no legitimate command.
+
+    Only UNQUOTED occurrences count — ``'$X'`` and ``"*"`` are literals — EXCEPT
+    that double quotes do NOT suspend expansion: an unescaped ``$`` or backtick
+    inside ``"..."`` (``"$(printf push)"``, ``"${VAR}"``) is an expansion bash
+    still runs, so it is opaque. Single-quoted and escaped (``\\$``) spellings
+    stay literal. Quoted-ness comes from the one shell state machine
+    (:func:`_iter_shell_chars`), so this cannot disagree with the rest of the
+    scan about where a quote ends.
+    """
+    if _push_token_redirection(word)[0]:
+        return True
+    brace_open = False
+    brace_body: list[str] = []
+    for step in _iter_shell_chars(word):
+        if step.trailing_escape:
+            return True  # fragment -> fail closed
+        if not step.active:
+            # Inside double quotes an unescaped ``$`` / backtick still expands
+            # (``step.text == step.char`` excludes an escaped ``\\$``), so it is
+            # opaque; every other quoted/escaped character is a literal.
+            if step.state == 2 and step.text == step.char and step.char in "$`":
+                return True
+            continue
+        char = step.char
+        if char in "$`" or char in _PREVERB_GLOB_CHARS:
+            return True  # unquoted expansion/substitution or filesystem glob
+        if char == "{":
+            brace_open, brace_body = True, []
+        elif brace_open:
+            if char == "}":
+                if "," in (body := "".join(brace_body)) or ".." in body:
+                    return True  # brace EXPANSION
+                brace_open = False
+            else:
+                brace_body.append(char)
+    return bool(brace_open)  # unterminated word -> fail closed
+
+
+def _git_segment_has_opaque_preverb(segment: str) -> bool:
+    """True when *segment* is a ``git`` command carrying an unverifiable (opaque)
+    word up to and INCLUDING the subcommand position.
+
+    Closes the gap where an unquoted expansion that evaporates at run time
+    (``git ${UNSET} push origin main``, ``git $(echo '') push origin main``) is
+    removed from argv by the shell — git really pushes — yet the word left in
+    the SOURCE text (``${unset}``, ``$(echo``) is neither a flag nor the
+    subcommand, so the verb-anchored regex and the normalizer seek both stop one
+    token short. Rather than model expansion, the floor refuses to verify: for a
+    segment whose COMMAND WORD is ``git``, any non-plain word before or at the
+    subcommand position makes the push unverifiable, so the caller treats it as
+    a publish and its fail-closed machinery denies it.
+
+    The command-word check keeps commands that merely MENTION git allowed
+    (``command -v git``, ``grep git *.py``, ``exec git "$@"`` — command word not
+    ``git``). Refusing a git segment whose own pre-subcommand word is non-plain
+    (``git $X status``) is the accepted fail-safe cost. Reuses
+    :func:`_split_shell_words` and the ``_GIT_ARG_FLAGS`` seek rules; no new lexer.
+    """
+    words = _split_shell_words(segment)
+    # Find the COMMAND WORD the way bash does: skip a leading run of variable
+    # assignments (``VAR=x``) and redirections (``>/dev/null``, ``2>&1``, and a
+    # bare ``>`` plus its separate target word) — none of which is the program.
+    # Reading the first word blindly let a leading redirect (``>/dev/null git
+    # push origin main``) be taken as the command word, so the git check never
+    # fired. A leading assignment's value never reaches the push target, and a
+    # redirect's target is not a refspec, so skipping them is safe; the push is
+    # still judged on its own refspec word.
+    n = len(words)
+    i = 0
+    while i < n:
+        word = words[i]
+        if not word.strip():
+            i += 1
+            continue
+        if word == "!":
+            i += 1  # shell negation -- a reserved word, not the program
+            continue
+        if ENV_ASSIGNMENT_RE.match(word):
+            i += 1  # leading assignment -- not the program
+            continue
+        is_redirection, consumes_next = _push_token_redirection(word)
+        if is_redirection:
+            i += 1  # the redirection operator (and its glued target, if any)
+            if consumes_next:
+                i += 1  # a bare ``>`` takes the next word as its target
+            continue
+        break  # first non-prefix word: the command word
+    if i >= n:
+        return False
+    # Program-position expansion (``$GIT push``) is handled by the publish
+    # floor's substitution-program regex, not here, so fire only when the
+    # literal command word resolves to git. ``_resolves_to_git`` also reads a
+    # ``$'git'`` ANSI-C spelling and a ``$"git"`` form, which bash hands to exec
+    # as the literal ``git`` even though ``_dequote_token`` leaves the ``$``.
+    if not _resolves_to_git(words[i]):
+        return False
+    # Walk after the command word, skipping plain flags (and the one value a
+    # value-taking global flag consumes), until the subcommand position. An
+    # opaque word reached on the way, or standing IN the subcommand position,
+    # means the push is unverifiable.
+    i += 1
+    while i < len(words):
+        word = words[i]
+        if not word.strip():
+            i += 1  # zero-width/whitespace-only word -- never the subcommand
+            continue
+        if _word_is_opaque_preverb(word):
+            return True
+        # Classify the word the way git reads it: cut glued operators AND strip
+        # quoting, so a quoted flag (``'-c'``) is recognised as the flag it is
+        # rather than mistaken for the subcommand (which would stop the walk one
+        # token short of a later opaque word).
+        cut = _dequote_token(_cut_at_operator(word))
+        if cut in _GIT_ARG_FLAGS:
+            # Value-taking global flag; its value is still before the subcommand.
+            i += 1
+            if i < len(words) and words[i].strip() and _word_is_opaque_preverb(words[i]):
+                return True
+            i += 1
+            continue
+        if cut.startswith("-"):
+            i += 1  # plain simple flag
+            continue
+        return False  # subcommand position reached with no opaque word before it
+    return False
+
+
 # The product name as a WHOLE program name (bare or the tail of a path), which is
 # what distinguishes ``bin/kirocrew token`` from ``cd kirocrew-wt-x``.
 
