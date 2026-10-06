@@ -2,6 +2,7 @@ import { safeSetItem } from '../../utils/safeStorage'
 import { STORAGE_KEY } from './constants'
 import { fmtBytes, fmtDateTimeNumeric } from '../../i18n/format'
 import { hasCommandModifier } from '../../utils/commandModifier'
+import { pathBasename, stripTrailingSeparators } from '../../utils/pathBasename'
 
 export const extOf = (p: string) => {
   const slash = Math.max(p.lastIndexOf('/'), p.lastIndexOf('\\'))
@@ -11,11 +12,7 @@ export const extOf = (p: string) => {
   return base.slice(i).toLowerCase()
 }
 
-export const basename = (p: string) => {
-  const s = p.replace(/\/+$/, '')
-  const i = s.lastIndexOf('/')
-  return i < 0 ? s : s.slice(i + 1)
-}
+export const basename = (p: string) => pathBasename(stripTrailingSeparators(p))
 
 export const dirname = (p: string) => {
   const s = p.replace(/\/+$/, '')
