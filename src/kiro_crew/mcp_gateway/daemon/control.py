@@ -16,7 +16,12 @@ from kiro_crew.code_fingerprint import code_fingerprint
 from kiro_crew.mcp_gateway.admission import Admission
 from kiro_crew.mcp_gateway.daemon import logger
 from kiro_crew.mcp_gateway.daemon.audit import _audit_caller_claimed, _audit_stand_down
-from kiro_crew.mcp_gateway.daemon.identity import _CONN_INDEX, _bind_token, _caller_from_register
+from kiro_crew.mcp_gateway.daemon.identity import (
+    _CONN_INDEX,
+    _bind_token,
+    _caller_from_register,
+    _pid_claimed_sessions,
+)
 from kiro_crew.mcp_gateway.daemon.launch import resolvable_target_stems
 from kiro_crew.mcp_gateway.daemon.wire import _write_json_line
 from kiro_crew.mcp_gateway.pool import BackendPool
@@ -190,6 +195,11 @@ async def _apply_claim(
     raw_token = frame.get("pid_start_id")
     claim_token = raw_token if isinstance(raw_token, str) else None
     _bind_token(session_token, updated_caller, pid, claim_token)
+    # Does this runtime demonstrably host more than one ACP session? Asked AFTER
+    # binding so the claim being applied counts itself. Two or more means the
+    # process tree names a RUNTIME and not a session, which is what the two
+    # branches below consult it for.
+    shared_pid = len(_pid_claimed_sessions(pid)) >= 2
     conns = _CONN_INDEX.get(pid, set())
     if not conns:
         # Usually the normal ordering: a session's claim is pushed before its
@@ -234,6 +244,31 @@ async def _apply_claim(
             # This connection belongs to a different session on the same
             # runtime — the ``spawn_run`` subagent case. Not a skip worth
             # auditing as denied: nothing was attempted against it.
+            continue
+        if session_token and not conn.stub_session_token and shared_pid:
+            # A tokened claim meeting a TOKENLESS connection on a runtime known to
+            # host several sessions. The connection names no session, so the only
+            # thing linking it to this claim is the PID — and the PID is shared, so
+            # that link cannot tell whether the connection is this claim's session
+            # or a co-tenant's. Retargeting it would hand one session's tools to
+            # another: its work_brief / work_report would read and write the
+            # claiming session's ledger. Refuse instead of guessing; the connection
+            # keeps whatever identity it already had, and a claim carrying ITS token
+            # still reaches it through the branch above.
+            skipped += 1
+            reason = (
+                f"pid {pid} hosts {len(_pid_claimed_sessions(pid))} claimed sessions "
+                f"and stub {conn.stub_uuid} carries no session token — refusing to "
+                f"retarget it to {updated_caller.session_key} on PID alone"
+            )
+            logger.warning("claim refused an ambiguous tokenless stub: %s", reason)
+            _audit_caller_claimed(
+                conn.caller.session_key if conn.caller is not None else "",
+                updated_caller.session_key,
+                conn.pool_label,
+                "denied",
+                reason,
+            )
             continue
         recorded_token = conn.pid_start_ids.get(pid)
         if claim_token is not None and recorded_token is not None and claim_token != recorded_token:
@@ -284,13 +319,32 @@ async def _apply_claim(
                     )
         updated += 1
         _audit_caller_claimed(old_key, updated_caller.session_key, conn.pool_label, "allowed")
-        logger.info(
-            "stub %s claim → session_key=%s type=%s (was %s)",
-            conn.stub_uuid,
-            updated_caller.session_key,
-            updated_caller.session_type,
-            old_key or "<none>",
-        )
+        # Every connection reaching pass 2 carries an identity DIFFERENT from the
+        # claim's (an equal one is skipped above as an idempotent re-claim). On a
+        # single-session runtime that is the warm-pool rekey this path exists for,
+        # and it is routine. On a runtime hosting several sessions it means one
+        # session's live identity was replaced by another's, which is worth an
+        # operator's attention: the displaced session's tools now answer as the
+        # claiming session until a claim naming its own token repairs it.
+        if old_key and shared_pid:
+            logger.warning(
+                "stub %s claim replaced a live identity on a shared runtime: "
+                "session_key=%s type=%s (was %s); pid=%d hosts %d claimed sessions",
+                conn.stub_uuid,
+                updated_caller.session_key,
+                updated_caller.session_type,
+                old_key,
+                pid,
+                len(_pid_claimed_sessions(pid)),
+            )
+        else:
+            logger.info(
+                "stub %s claim → session_key=%s type=%s (was %s)",
+                conn.stub_uuid,
+                updated_caller.session_key,
+                updated_caller.session_type,
+                old_key or "<none>",
+            )
     return {"type": "claimed", "updated": updated, "connections": len(conns), "skipped": skipped}
 
 

@@ -526,6 +526,96 @@ async def test_a_claim_for_one_session_leaves_its_sibling_alone(
 
 
 @pytest.mark.asyncio
+async def test_a_tokenless_stub_is_not_handed_to_a_co_tenant(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A tokenless stub on a runtime hosting SEVERAL sessions stays where it is.
+
+    One runtime, three connections: two that name their session with a token, and
+    one launched outside the token path that names none. While only one session has
+    claimed, the tokenless stub rides along on the process tree exactly as it always
+    did — the runtime still has one plausible owner. Once a SECOND session claims the
+    same runtime, the tree stops naming a session, and the next claim must not take
+    the tokenless stub with it: that stub's ``work_brief`` and ``work_report`` would
+    then read and write the claiming session's ledger instead of its own.
+    """
+    token_c = "c" * 64
+    a_backend, a_reader, a_task = await _live_conn(monkeypatch, "", TOKEN_A, "stub-a")
+    b_backend, b_reader, b_task = await _live_conn(monkeypatch, "", TOKEN_B, "stub-b")
+    plain_backend, plain_reader, plain_task = await _live_conn(monkeypatch, "", "", "stub-plain")
+
+    # One session so far: the runtime has a single plausible owner, so the
+    # tokenless stub is still re-targeted on the tree. Unchanged behavior.
+    first = await gw._apply_claim(_claim_with_token(_PID, PARENT_KEY, TOKEN_A))
+    assert first["updated"] == 2 and first["skipped"] == 0
+    assert (await _next_caller(a_backend, a_reader)).session_key == PARENT_KEY
+    assert (await _next_caller(plain_backend, plain_reader)).session_key == PARENT_KEY
+
+    # A second session claims the same runtime. Now the PID names two sessions,
+    # so it names neither: the tokenless stub is refused, not reassigned.
+    second = await gw._apply_claim(_claim_with_token(_PID, SUB_KEY, TOKEN_B))
+    assert second["updated"] == 1, "only the stub whose token the claim names"
+    assert second["skipped"] == 1, "the tokenless stub is refused, not retargeted"
+    assert (await _next_caller(b_backend, b_reader)).session_key == SUB_KEY
+    # THE property: the tokenless stub kept its own identity instead of being
+    # handed to the session that happened to claim the runtime last.
+    assert (await _next_caller(plain_backend, plain_reader)).session_key == PARENT_KEY
+
+    # A claim naming the tokenless stub's runtime for a THIRD session cannot
+    # reach it either — refusal is not a one-shot.
+    third = await gw._apply_claim(_claim_with_token(_PID, "dashboard:chat-9", token_c))
+    assert third["skipped"] == 1
+    assert (await _next_caller(plain_backend, plain_reader)).session_key == PARENT_KEY
+
+    await _close(a_reader, a_task)
+    await _close(b_reader, b_task)
+    await _close(plain_reader, plain_task)
+
+
+@pytest.mark.asyncio
+async def test_replacing_a_live_identity_on_a_shared_runtime_warns(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Overwriting a DIFFERENT live identity on a shared runtime is a warning.
+
+    A tokenless claim keeps its PID-wide reach, so on a runtime hosting several
+    sessions it still replaces each one's live identity. That is the case an
+    operator has to be able to find in a log: on a single-session runtime the same
+    replacement is just the warm-pool rekey this path exists for, and stays at INFO.
+    """
+    a_backend, a_reader, a_task = await _live_conn(monkeypatch, "", TOKEN_A, "stub-a")
+    b_backend, b_reader, b_task = await _live_conn(monkeypatch, "", TOKEN_B, "stub-b")
+    await gw._apply_claim(_claim_with_token(_PID, PARENT_KEY, TOKEN_A))
+
+    # One claimed session: a re-claim of that same slot is the routine rekey.
+    caplog.clear()
+    with caplog.at_level(logging.INFO):
+        await gw._apply_claim(_claim_with_token(_PID, "dashboard:chat-2", TOKEN_A))
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+    # Two claimed sessions, then a tokenless claim that reaches both: each stub
+    # loses a live identity to a session that is not its own.
+    await gw._apply_claim(_claim_with_token(_PID, SUB_KEY, TOKEN_B))
+    caplog.clear()
+    with caplog.at_level(logging.INFO):
+        ack = await gw._apply_claim(_claim(_PID, "dashboard:chat-3"))
+    assert ack["updated"] == 2, "a tokenless claim keeps the PID-wide reach it had"
+    warnings = [
+        r.getMessage()
+        for r in caplog.records
+        if r.levelno >= logging.WARNING and "replaced a live identity" in r.getMessage()
+    ]
+    assert len(warnings) == 2, warnings
+    assert any("stub-a" in m for m in warnings) and any("stub-b" in m for m in warnings)
+    # The token itself must never reach a log record.
+    assert not any(TOKEN_A in m or TOKEN_B in m for m in warnings)
+
+    await _close(a_reader, a_task)
+    await _close(b_reader, b_task)
+
+
+@pytest.mark.asyncio
 async def test_a_claim_binds_its_token_even_when_it_matches_nothing() -> None:
     """A session's claim is pushed BEFORE its stubs launch, so "matched zero" is
     the normal ordering — the binding is what the register then reads."""

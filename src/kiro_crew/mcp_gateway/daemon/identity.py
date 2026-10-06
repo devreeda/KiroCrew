@@ -160,6 +160,26 @@ def _bind_token(
         _TOKEN_BINDINGS.popitem(last=False)
 
 
+def _pid_claimed_sessions(pid: int) -> set[str]:
+    """The distinct session keys claims have bound to *pid*.
+
+    Derived from :data:`_TOKEN_BINDINGS` rather than counted in a second table,
+    so it cannot drift from the bindings it describes. Two or more keys means the
+    runtime demonstrably hosts several ACP sessions, which is what makes a
+    PID-keyed answer about that runtime a guess rather than an identity.
+
+    Only claims that CARRIED a token appear here, because only those bind. A
+    runtime whose sessions send tokenless claims therefore reads as ambiguous to
+    nobody, which is the conservative direction: it keeps the PID-wide behavior
+    such a deployment already depends on.
+    """
+    return {
+        caller.session_key
+        for caller, bound_pid, _ in _TOKEN_BINDINGS.values()
+        if bound_pid == pid and caller.session_key
+    }
+
+
 def _token_caller(
     token: str,
     attested_pids: Collection[int] = (),
