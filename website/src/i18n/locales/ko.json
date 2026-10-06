@@ -9293,6 +9293,25 @@
     "theme": {
       "high_contrast": "🔆 고대비"
     },
+    "useCloseSessionTree": {
+      "body": "아래에서 실행 중인 세션을 열어 중지하거나 완료될 때까지 기다리세요. 그런 다음 이 세션을 다시 닫으세요.",
+      "closed_other": "{{count}}개 세션을 닫았습니다",
+      "dismiss": "확인",
+      "finished": "완료",
+      "level_other": "{{count}}단계 아래",
+      "level_self": "이 세션",
+      "open_running": "이 세션을 열어 중지하거나 완료될 때까지 기다리기",
+      "pref_body": "모두 완료되었습니다. 닫으면 이전 세션으로 이동하며, 거기서 다시 열 수 있습니다.",
+      "pref_confirm_other": "모두 닫기({{count}})",
+      "pref_title_other": "이 세션과 그 아래 {{count}}개 세션을 닫으시겠습니까?",
+      "refused_other": "아직 열려 있음: {{names}}. 잠시 후 다시 닫아 보세요.",
+      "refused_title": "일부 세션이 닫히지 않았습니다",
+      "running": "실행 중",
+      "title_other": "이 아래 {{count}}개 세션이 아직 실행 중입니다",
+      "undo": "실행 취소",
+      "undo_failed_other": "다시 열리지 않음: {{names}}. 이전 세션에서 열 수 있습니다.",
+      "undo_failed_title": "일부 세션을 다시 열지 못했습니다"
+    },
     "useCronActions": {
       "failed_to_cancel_job": "작업을 취소하지 못했습니다",
       "failed_to_pause_job": "작업을 일시중지할 수 없습니다",
@@ -11346,6 +11365,7 @@
       "clear_search": "검색 지우기",
       "close": "닫기",
       "close_session": "세션 닫기",
+      "close_session_tree_other": "모두 닫기({{total}}): 이 세션과 그 아래 {{count}}개",
       "closed": "닫힘",
       "collapse_folder_name": "{{name}} 폴더 접기",
       "collapse_group_results": "{{group}} 결과 접기",

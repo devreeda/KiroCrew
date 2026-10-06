@@ -9293,6 +9293,25 @@
     "theme": {
       "high_contrast": "🔆 高对比度"
     },
+    "useCloseSessionTree": {
+      "body": "打开下面正在运行的会话，停止它或等它完成，然后再关闭此会话。",
+      "closed_other": "已关闭 {{count}} 个会话",
+      "dismiss": "好",
+      "finished": "已完成",
+      "level_other": "下 {{count}} 层",
+      "level_self": "此会话",
+      "open_running": "打开此会话以停止它或等它完成",
+      "pref_body": "它们都已完成。关闭后会移到较早的会话，之后可以从那里重新打开。",
+      "pref_confirm_other": "全部关闭（{{count}}）",
+      "pref_title_other": "关闭此会话及其下的 {{count}} 个会话？",
+      "refused_other": "仍然打开：{{names}}。稍后再关一次试试。",
+      "refused_title": "有些会话没有关闭",
+      "running": "运行中",
+      "title_other": "此会话下有 {{count}} 个会话仍在运行",
+      "undo": "撤销",
+      "undo_failed_other": "未重新打开：{{names}}。你仍可以在较早的会话中打开它们。",
+      "undo_failed_title": "有些会话没有重新打开"
+    },
     "useCronActions": {
       "failed_to_cancel_job": "取消任务失败",
       "failed_to_pause_job": "暂停任务失败",
@@ -11346,6 +11365,7 @@
       "clear_search": "清除搜索",
       "close": "关闭",
       "close_session": "关闭会话",
+      "close_session_tree_other": "全部关闭（{{total}}）：此会话及其下的 {{count}} 个",
       "closed": "已关闭",
       "collapse_folder_name": "折叠文件夹 {{name}}",
       "collapse_group_results": "折叠 {{group}} 的结果",
