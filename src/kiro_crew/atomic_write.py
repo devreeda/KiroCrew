@@ -208,6 +208,132 @@ def _is_access_control_xattr(attr: str) -> bool:
 #: than a file whose permissions could not be tightened.
 RestrictErrorPolicy = Literal["raise", "warn"]
 
+#: Name of the breadcrumb file, under the data home, that records secret-bearing
+#: writes whose Windows owner-only lockdown failed under ``restrict_on_error=
+#: "warn"``. The write still happens (the caller chose that), but on Windows it
+#: lands under its inherited ACL with no second mechanism to tighten it, and the
+#: one log line it emits does not fire in normal operation. The doctor reads
+#: this file so a secret that could not be protected is reported, naming the
+#: file, instead of degrading silently.
+UNPROTECTED_SECRETS_BREADCRUMB = "unprotected-secrets.log"
+
+
+def _unprotected_secrets_path() -> Path | None:
+    """Resolve the breadcrumb file's path, or ``None`` if the home cannot be found.
+
+    Deferred import of :mod:`kiro_crew.config.paths`: this module is a leaf that
+    imports only :mod:`platform_compat` at module scope (``TestLeafPurity`` pins
+    that), so the one place that needs the data home does the import inside the
+    function, the same shape ``config.paths._ensure_crew_log_root`` uses for its
+    own one deferred import. ``peek_data_home`` is the read-only resolver that
+    does not create or maintain the home, which is right for a path this module
+    only ever appends to best-effort.
+    """
+    try:
+        from kiro_crew.config.paths import peek_data_home
+
+        return peek_data_home() / UNPROTECTED_SECRETS_BREADCRUMB
+    except Exception:
+        # The home is unresolvable (no env, exotic host). The log line already
+        # fired; a missing breadcrumb is a weaker signal, not a reason to turn a
+        # best-effort record into a failure the caller never asked for.
+        return None
+
+
+def _record_unprotected_secret(path: Path) -> None:
+    """Record *path* in the breadcrumb of Windows secrets that could not be locked down.
+
+    Best-effort and NEVER raising: the caller passed ``restrict_on_error="warn"``
+    precisely because the write must not be undone, and failing to record the
+    breadcrumb must not undo it either. One line per DISTINCT destination —
+    ISO-8601 UTC stamp then the path, never the temp name and never the content,
+    the same discipline as the warning log.
+
+    APPEND-ONLY by design. The breadcrumb is only ever appended to and never
+    rewritten or cleared, so there is no read-modify-write window in which a
+    concurrent writer's record could be lost: two processes recording different
+    destinations each append their own line, and the reader deduplicates. The
+    dedup read here only avoids piling identical lines for the SAME destination;
+    a lost race on it at worst writes one extra duplicate line the reader folds
+    away, never a lost record. Staleness (a file later locked down, deleted, or
+    moved) is handled entirely by the reader, which is race-free because it only
+    reads.
+    """
+    try:
+        breadcrumb = _unprotected_secrets_path()
+        if breadcrumb is None:
+            return
+        dest = str(path)
+        if dest in _breadcrumb_entries(breadcrumb):
+            return
+        breadcrumb.parent.mkdir(parents=True, exist_ok=True)
+        stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        with open(breadcrumb, "a", encoding="utf-8") as fh:
+            fh.write(f"{stamp} {dest}\n")
+    except Exception:
+        # A read-only or full filesystem, a racing unlink, an unresolvable home:
+        # the write that mattered already landed, so swallow and move on. The log
+        # line is the fallback signal when even this cannot be recorded. Broad on
+        # purpose — nothing this best-effort breadcrumb hits is worth undoing the
+        # caller's "write anyway" choice.
+        pass
+
+
+def _breadcrumb_entries(breadcrumb: Path) -> set[str]:
+    """The set of destination paths already recorded, read decode-safe.
+
+    Used by :func:`_record_unprotected_secret` for its dedup check. Returns an
+    empty set when the file is absent or unreadable — a dedup miss at worst
+    writes one duplicate line, which the reader folds away.
+    """
+    try:
+        lines = breadcrumb.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return set()
+    return {line.partition(" ")[2].strip() for line in lines if line.partition(" ")[2].strip()}
+
+
+def read_unprotected_secrets() -> list[str]:
+    """Return the distinct destination paths recorded in the breadcrumb, newest first.
+
+    The reader for :func:`_record_unprotected_secret`, used by the doctor to
+    report Windows secrets that land under their inherited ACL. Returns an empty
+    list when the breadcrumb does not exist (the healthy case) or cannot be read
+    — a diagnostic must not itself fail. Deduplicates while preserving the
+    most-recent order, and skips any path whose file is absent, so a secret that
+    is deleted or moved drops out of the report even if nothing cleared its line.
+    Entries that are still present and unprotected remain.
+    """
+    breadcrumb = _unprotected_secrets_path()
+    if breadcrumb is None:
+        return []
+    try:
+        lines = breadcrumb.read_text(encoding="utf-8", errors="replace").splitlines()
+    except Exception:
+        # Decode is forced lossless by errors="replace", so what remains is an
+        # OSError or an unresolvable path. A diagnostic must never raise into the
+        # doctor (cli_doctor calls it unwrapped), so an unreadable breadcrumb
+        # reports "nothing" rather than crashing the health report.
+        return []
+    seen: set[str] = set()
+    out: list[str] = []
+    for line in reversed(lines):
+        # Each line is "<stamp> <path>"; the path is everything after the first
+        # space. A malformed line (no space) is skipped rather than guessed at.
+        _, sep, dest = line.partition(" ")
+        dest = dest.strip()
+        if not sep or not dest or dest in seen:
+            continue
+        seen.add(dest)
+        try:
+            exists = Path(dest).exists()
+        except OSError:
+            exists = True  # cannot tell; keep it rather than hide a real exposure
+        if exists:
+            out.append(dest)
+    return out
+
+
 _umask_lock = threading.Lock()
 _default_mode: int | None = None
 
@@ -1051,12 +1177,18 @@ def atomic_write(
     anyway, for the callers whose own comments say the write matters more than
     the permissions: ``sel.py`` must not brick SecurityEventLog init on a
     read-only filesystem, and ``dashboard/refresh_tokens.py`` must not drop
-    refresh-token reuse-detection state. Note the asymmetry the two platforms
-    give ``"warn"``: on POSIX ``restrict_to_owner`` is ``chmod(0o600)``, which
-    the ``fchmod_safe`` below repeats, so the file still lands at ``0o600``
-    after a warn; on Windows ``fchmod_safe`` is a no-op, so a warn genuinely
-    publishes the file under its inherited ACL. That is the exposure those
-    callers accept today, stated rather than implied.
+    refresh-token reuse-detection state. On POSIX the ``fchmod_safe`` below
+    re-applies ``0o600`` after a warn, so the file still lands locked down; on
+    Windows ``fchmod_safe`` is a no-op, so the file genuinely lands under its
+    inherited ACL. ``"warn"`` means "write anyway" on both platforms —
+    reversing that per-caller choice is not this function's call. Because the
+    Windows file lands readable with no second mechanism to tighten it and the
+    one log line it emits does not fire in normal operation, a Windows warn also
+    records a durable breadcrumb naming the file (see
+    :func:`_record_unprotected_secret` and :data:`UNPROTECTED_SECRETS_BREADCRUMB`),
+    which the doctor surfaces, so the degradation is visible and actionable
+    rather than silent. Recording the breadcrumb is best-effort and never undoes
+    the write.
 
     *preserve_access_control_from* is an OPEN file descriptor for the file being
     replaced. When given, the source's extended attributes are read from that
@@ -1175,6 +1307,22 @@ def atomic_write(
             except OSError:
                 if restrict_on_error == "raise":
                     raise
+                # "warn" is a per-caller choice: these callers' own comments say
+                # a failed write is worse than a less-protected one (sel.py must
+                # not brick SecurityEventLog init, config/loader.py must not make
+                # config.json unwritable, refresh_tokens.py must not drop
+                # reuse-detection state). So the write still proceeds — on both
+                # platforms. What differs is the AFTERMATH: on POSIX the
+                # fchmod_safe below re-applies 0o600, so the file still lands
+                # owner-only; on Windows fchmod_safe is a no-op, so the file
+                # genuinely lands under its inherited ACL. On Windows that is
+                # invisible after the fact (only this one log line, which the
+                # issue notes does not fire in normal operation), so it leaves a
+                # DURABLE breadcrumb naming the file — the signal the doctor
+                # surfaces. Best-effort and never raising: honouring the caller's
+                # "write anyway" must not be undone by a failure to record the
+                # breadcrumb.
+                #
                 # Logs the DESTINATION path, never the temp name and never
                 # *content*. The temp name is an internal detail an operator
                 # cannot act on; the destination is the file whose permissions
@@ -1186,6 +1334,8 @@ def atomic_write(
                     path,
                     exc_info=True,
                 )
+                if platform_compat.IS_WINDOWS:
+                    _record_unprotected_secret(path)
         # No-op on Windows (no POSIX permission bits / os.fchmod).
         platform_compat.fchmod_safe(
             fd, effective_mode if effective_mode is not None else _get_default_mode()

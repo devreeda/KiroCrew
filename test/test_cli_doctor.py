@@ -4452,3 +4452,57 @@ class TestRunDirCensus:
         cli_doctor._doctor_run_dirs()
         out = capsys.readouterr().out
         assert "⚠️  the session pid ledger cannot be read; census skipped" in out
+
+
+class TestUnprotectedSecretsDoctor:
+    """The doctor row for Windows secrets that could not be locked down."""
+
+    def test_silent_when_nothing_recorded(self, monkeypatch, capsys):
+        from kiro_crew import atomic_write
+
+        monkeypatch.setattr(atomic_write, "read_unprotected_secrets", lambda: [])
+        from kiro_crew.doctor_checks import access
+
+        access._doctor_unprotected_secrets()
+        assert capsys.readouterr().out == ""
+
+    def test_names_each_affected_file(self, monkeypatch, capsys):
+        from kiro_crew import atomic_write
+
+        monkeypatch.setattr(
+            atomic_write,
+            "read_unprotected_secrets",
+            lambda: ["C:\\\\Users\\\\me\\\\.kirocrew\\\\sel.key", "C:\\\\x\\\\token.secret"],
+        )
+        from kiro_crew.doctor_checks import access
+
+        access._doctor_unprotected_secrets()
+        out = capsys.readouterr().out
+        assert "owner-only permissions" in out
+        assert "2 secret file(s)" in out
+        assert "sel.key" in out and "token.secret" in out
+        assert "read them" in out
+
+    def test_truncates_a_long_list_but_names_the_overflow(self, monkeypatch, capsys):
+        from kiro_crew import atomic_write
+
+        files = [f"C:\\\\x\\\\secret-{i}" for i in range(15)]
+        monkeypatch.setattr(atomic_write, "read_unprotected_secrets", lambda: files)
+        from kiro_crew.doctor_checks import access
+
+        access._doctor_unprotected_secrets()
+        out = capsys.readouterr().out
+        assert "secret-0" in out and "secret-9" in out
+        assert "+5 more" in out
+
+    def test_terminal_escape_sequences_in_paths_are_sanitized(self, monkeypatch, capsys):
+        """A planted path with terminal escapes must not inject into the doctor output."""
+        from kiro_crew import atomic_write
+        from kiro_crew.doctor_checks import access
+
+        esc_path = "C:\\x\\evil\x1b[31mred\x1b[0m.key"
+        monkeypatch.setattr(atomic_write, "read_unprotected_secrets", lambda: [esc_path])
+        access._doctor_unprotected_secrets()
+        out = capsys.readouterr().out
+        assert "\x1b[31m" not in out, "raw escape sequences must be stripped"
+        assert "evil" in out, "the path base is still visible"
