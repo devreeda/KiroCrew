@@ -879,22 +879,25 @@ export default function App() {
   const activeSlotProject = useAppSelector(selectActiveSlotProject)
   const terminalPosition = useTerminalPosition()
   const navigate = useNavigate()
-  const mayLeaveForErrorHandoff = useMayLeaveForNavigation()
+  const mayLeaveForNavigation = useMayLeaveForNavigation()
 
   // Main-dashboard role for the artifact popout nav-intent handshake: perform
   // navigation intents forwarded from popout windows (activity-timeline
   // session links, "Ask agent to address", …). Popout and embed windows never
   // register — only handler-registered windows answer nav-requests, which is
   // what keeps a second popout from claiming another popout's navigation.
+  // A forwarded intent replaces the page on screen HERE, so that page's leave
+  // check runs first — the popout cannot see this window's unsaved work.
   useEffect(() => {
     if (isPopout || isEmbed) return
     return setArtifactNavIntentHandler((intent) =>
       applyNavIntentInMain(intent, {
         navigate,
         switchSlot: (slotKey) => { dispatch(switchSlot({ key: slotKey, announceOnMissing: true })) },
+        mayLeave: mayLeaveForNavigation,
       }),
     )
-  }, [isPopout, isEmbed, navigate, dispatch])
+  }, [isPopout, isEmbed, navigate, dispatch, mayLeaveForNavigation])
 
   // Publish the router navigator and the current page's leave answer for the
   // error → agent hand-off. AskAgentButton is deliberately hook-free (its
@@ -909,9 +912,9 @@ export default function App() {
   // banners of its own). They fall through to the hard-nav path instead.
   useEffect(() => {
     if (isPopout || isEmbed) return
-    installSoftNavigate(navigate, mayLeaveForErrorHandoff)
+    installSoftNavigate(navigate, mayLeaveForNavigation)
     return () => installSoftNavigate(null)
-  }, [isPopout, isEmbed, navigate, mayLeaveForErrorHandoff])
+  }, [isPopout, isEmbed, navigate, mayLeaveForNavigation])
 
   const {
     colorTheme,

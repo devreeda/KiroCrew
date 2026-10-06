@@ -6,7 +6,7 @@ import {
   type PopoutMsg,
   type NavIntent,
 } from '../utils/popoutController'
-import { applyNavIntentInMain, chatDeepLinkSlot, writePrefill, PREFILL_STORAGE_KEY } from '../utils/navIntent'
+import { applyNavIntentInMain, chatDeepLinkSlot, registerOpenComposer, writePrefill, PREFILL_STORAGE_KEY } from '../utils/navIntent'
 
 /**
  * Navigation-intent forwarding tests (popout navigation containment).
@@ -224,6 +224,77 @@ describe('applyNavIntentInMain', () => {
     applyNavIntentInMain({ path: '/artifacts' }, { navigate, switchSlot })
     expect(switchSlot).not.toHaveBeenCalled()
     expect(navigate).toHaveBeenCalledWith('/artifacts')
+  })
+
+  it('drops the whole intent when the page on screen refuses to be left', () => {
+    const setItem = vi.spyOn(Storage.prototype, 'setItem')
+    const switchSlot = vi.fn()
+    const navigate = vi.fn()
+    applyNavIntentInMain(
+      { path: '/chat', slotKey: 'new-1', prefill: { slotKey: 'new-1', prompt: 'do it' } },
+      { navigate, switchSlot, mayLeave: () => false },
+    )
+    expect(setItem).not.toHaveBeenCalledWith(PREFILL_STORAGE_KEY, expect.anything())
+    expect(switchSlot).not.toHaveBeenCalled()
+    expect(navigate).not.toHaveBeenCalled()
+  })
+
+  it('navigates once the page on screen agrees to be left', () => {
+    const navigate = vi.fn()
+    const mayLeave = vi.fn(() => true)
+    applyNavIntentInMain({ path: '/artifacts' }, { navigate, switchSlot: vi.fn(), mayLeave })
+    expect(mayLeave).toHaveBeenCalledTimes(1)
+    expect(navigate).toHaveBeenCalledWith('/artifacts')
+  })
+
+  it('does not ask when the intent appends to the composer already on screen', () => {
+    const append = vi.fn()
+    const unregister = registerOpenComposer('chat-1', append)
+    const mayLeave = vi.fn(() => false)
+    try {
+      applyNavIntentInMain(
+        { path: '/chat', slotKey: 'chat-1', prefill: { slotKey: 'chat-1', prompt: 'ref', append: 'ref' } },
+        { navigate: vi.fn(), switchSlot: vi.fn(), mayLeave },
+      )
+      expect(mayLeave).not.toHaveBeenCalled()
+      expect(append).toHaveBeenCalledWith('ref')
+    } finally {
+      unregister()
+    }
+  })
+
+  it('appends to the composer already open on the target slot instead of leaving a stale prefill', () => {
+    const append = vi.fn()
+    const unregister = registerOpenComposer('chat-1', append)
+    const setItem = vi.spyOn(Storage.prototype, 'setItem')
+    const switchSlot = vi.fn()
+    try {
+      applyNavIntentInMain(
+        { path: '/chat', slotKey: 'chat-1', prefill: { slotKey: 'chat-1', prompt: 'old draft\n\nref', append: 'ref' } },
+        { navigate: vi.fn(), switchSlot },
+      )
+      expect(append).toHaveBeenCalledWith('ref')
+      expect(setItem).not.toHaveBeenCalledWith(PREFILL_STORAGE_KEY, expect.anything())
+      expect(switchSlot).not.toHaveBeenCalled()
+    } finally {
+      unregister()
+    }
+  })
+
+  it('still seeds the prefill when the open composer shows a different slot', () => {
+    const append = vi.fn()
+    const unregister = registerOpenComposer('chat-2', append)
+    const setItem = vi.spyOn(Storage.prototype, 'setItem')
+    try {
+      applyNavIntentInMain(
+        { path: '/chat', slotKey: 'chat-1', prefill: { slotKey: 'chat-1', prompt: 'ref', append: 'ref' } },
+        { navigate: vi.fn(), switchSlot: vi.fn() },
+      )
+      expect(append).not.toHaveBeenCalled()
+      expect(setItem).toHaveBeenCalledWith(PREFILL_STORAGE_KEY, expect.stringContaining('"prompt":"ref"'))
+    } finally {
+      unregister()
+    }
   })
 })
 
