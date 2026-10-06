@@ -257,7 +257,12 @@ def check_provider_path_component(path: Path, *, label: str, uid: int, strict: b
 
 
 def check_provider_path_component_windows(
-    path: Path, *, label: str, me_sid: str, strict: bool
+    path: Path,
+    *,
+    label: str,
+    me_sid: str,
+    strict: bool,
+    extra_trusted_sids: frozenset[str] = frozenset(),
 ) -> None:
     """Apply the same policy to one path component, read from its Windows ACL.
 
@@ -269,6 +274,14 @@ def check_provider_path_component_windows(
     *me_sid* is the gateway user's SID, the analog of ``uid``. Note that an
     administrator's own SID is covered by ``S-1-5-32-544`` regardless, exactly
     as POSIX trusts ``uid 0``.
+
+    *extra_trusted_sids* adds principals a particular caller's context has
+    already blessed, on top of the well-known machine SIDs and (in relaxed mode)
+    *me_sid*. The staging-ancestor walk passes ``S-1-3-4`` (Owner Rights) there:
+    its chain runs over the data home, which ``ensure_data_home`` locks down with
+    an inheritable owner-only DACL whose grants are ``(S-1-3-4, me)`` — so Owner
+    Rights on that chain is this account's own lockdown, not a foreign writer.
+    The provider-executable walk passes nothing and keeps its stricter set.
 
     The component must also sit on a **local volume**, which arrives on the
     descriptor as ``volume_is_local`` rather than as a second platform call from
@@ -304,7 +317,7 @@ def check_provider_path_component_windows(
         types = ",".join(str(t) for t in security.unparsable_ace_types)
         raise ValueError(f"{label} carries ACE types this policy cannot evaluate (type {types})")
 
-    trusted = set(windows_acl.WELL_KNOWN_TRUSTED_SIDS)
+    trusted = set(windows_acl.WELL_KNOWN_TRUSTED_SIDS) | set(extra_trusted_sids)
     if strict:
         # Strict mode is the analog of "root-owned and unwritable by the
         # gateway user": the machine, not the user, must own and control it.

@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 
 from conftest import make_dir_link
-from kiro_crew import windows_acl
+from kiro_crew import github_runner, windows_acl
 from kiro_crew.cloud import aws, source
 
 
@@ -1319,18 +1319,18 @@ class TestTarballStagingDirectory:
 class TestWindowsStagingAncestorWalk:
     """The Windows arm of the staging ancestor walk (:func:`source._first_replaceable_windows`).
 
-    Before #13711 the walk stood down on Windows and returned ``None``, so a
-    relocated data home under a peer-writable ancestor was unguarded there. These
-    pins run on the Linux CI runner by injecting a fake :func:`windows_acl.describe`
-    and the launcher SID, which is the whole point of keeping the descriptor read in
-    ``windows_acl`` and the policy here: the decision is a pure function of the
-    ``ComponentSecurity`` dataclass and needs no real Windows host.
+    The arm reuses :func:`github_runner.check_provider_path_component_windows` per
+    node, so these pins drive that shared policy by injecting a fake ``describe`` on
+    the module it reads through and the launcher SID. The decision is a pure
+    function of the ``ComponentSecurity`` dataclass, so it runs on the Linux CI
+    runner with no real Windows host.
 
     Not run on a real Windows host.
     """
 
     _ME = "S-1-5-21-1-2-3-1001"
     _PEER = "S-1-5-21-1-2-3-1002"
+    _OWNER_RIGHTS = "S-1-3-4"
 
     def _clean(self, owner_sid: str = _ME, **over):
         """A ``ComponentSecurity`` that passes the policy, overridable per field."""
@@ -1352,11 +1352,12 @@ class TestWindowsStagingAncestorWalk:
         monkeypatch.setattr(source.platform_compat, "current_user_sid", lambda: self._ME)
 
     def _serve(self, monkeypatch, by_node: dict):
-        """Make ``windows_acl.describe`` answer from ``by_node`` keyed on resolved path.
+        """Make ``describe`` answer from ``by_node`` keyed on resolved path.
 
-        A value may be a ``ComponentSecurity`` to return or an exception to raise.
-        A node not in the map gets a clean, launcher-owned descriptor, so a test
-        states only the ancestor it is about.
+        Patched on the module the shared policy reads through
+        (``github_runner.windows_acl``). A value may be a ``ComponentSecurity`` to
+        return or an exception to raise. A node not in the map gets a clean,
+        launcher-owned descriptor, so a test states only the ancestor it is about.
         """
 
         def _describe(path):
@@ -1365,7 +1366,7 @@ class TestWindowsStagingAncestorWalk:
                 raise value
             return value
 
-        monkeypatch.setattr(source.windows_acl, "describe", _describe)
+        monkeypatch.setattr(github_runner.windows_acl, "describe", _describe)
 
     def _chain(self, monkeypatch, tmp_path):
         """A two-level chain (home / data-home) scoped by ``_chain_the_launcher_owns``."""
@@ -1427,6 +1428,43 @@ class TestWindowsStagingAncestorWalk:
         )
         assert source._first_replaceable(data_home) is None
 
+    def test_owner_rights_from_the_data_home_lockdown_is_trusted(
+        self, monkeypatch, tmp_path, _on_windows
+    ):
+        # ensure_data_home locks the data home with an inheritable owner-only DACL
+        # whose grants are (S-1-3-4, me), so every node on this chain carries an
+        # Owner Rights full-control ACE. It is this account's own lockdown, not a
+        # foreign writer -- refusing on it would reject the ordinary locked-down
+        # home on every Windows launch. The provider-executable walk does NOT trust
+        # S-1-3-4, which is why it travels as extra_trusted_sids here.
+        _, data_home = self._chain(monkeypatch, tmp_path)
+        owner_rights = windows_acl.Writer(
+            sid=self._OWNER_RIGHTS, name="NT AUTHORITY\\CREATOR OWNER", rights=("WRITE_DAC",)
+        )
+        self._serve(monkeypatch, {data_home.resolve(): self._clean(writers=(owner_rights,))})
+        assert source._first_replaceable(data_home) is None
+
+    def test_the_policy_is_the_shared_github_runner_check(self, monkeypatch, tmp_path, _on_windows):
+        # The per-node decision must BE
+        # github_runner.check_provider_path_component_windows, not a second copy. If
+        # that function is not called, the walk cannot have asked the policy -- so a
+        # peer-writable ancestor would wrongly pass.
+        _, data_home = self._chain(monkeypatch, tmp_path)
+        calls: list = []
+        real = github_runner.check_provider_path_component_windows
+
+        def _spy(path, **kw):
+            calls.append((Path(path), kw.get("strict"), kw.get("extra_trusted_sids")))
+            return real(path, **kw)
+
+        monkeypatch.setattr(github_runner, "check_provider_path_component_windows", _spy)
+        self._serve(monkeypatch, {})
+        source._first_replaceable(data_home)
+        assert calls, "the shared github_runner check was never called"
+        # Relaxed mode, and Owner Rights handed in as the one extra trusted principal.
+        assert all(strict is False for _, strict, _ in calls)
+        assert all(self._OWNER_RIGHTS in (extra or set()) for _, _, extra in calls)
+
     def test_a_null_dacl_ancestor_is_refused(self, monkeypatch, tmp_path, _on_windows):
         home, data_home = self._chain(monkeypatch, tmp_path)
         self._serve(monkeypatch, {home.resolve(): self._clean(null_dacl=True)})
@@ -1454,7 +1492,7 @@ class TestWindowsStagingAncestorWalk:
             {home.resolve(): windows_acl.AclUnavailable("GetNamedSecurityInfo failed")},
         )
         result = source._first_replaceable(data_home)
-        assert result is not None and "cannot read" in result[1]
+        assert result is not None and "unreadable" in result[1]
 
     def test_an_unverifiable_launcher_sid_fails_closed(self, monkeypatch, tmp_path):
         # The POSIX arm cannot reach this (geteuid always answers), but the Windows
@@ -1466,9 +1504,11 @@ class TestWindowsStagingAncestorWalk:
         result = source._first_replaceable(data_home)
         assert result is not None and "SID" in result[1]
 
-    def test_the_walk_no_longer_stands_down_on_windows(self, monkeypatch, tmp_path, _on_windows):
-        # The regression this issue is about: the old arm returned None for every
-        # Windows chain. A peer-writable ancestor must now be caught.
+    def test_a_windows_chain_with_a_peer_writable_ancestor_is_refused(
+        self, monkeypatch, tmp_path, _on_windows
+    ):
+        # The core guarantee: a Windows chain is walked, not waved through, so a
+        # peer-writable ancestor is caught rather than returning None.
         home, data_home = self._chain(monkeypatch, tmp_path)
         peer = windows_acl.Writer(sid=self._PEER, name="DOMAIN\\peer", rights=("DELETE",))
         self._serve(monkeypatch, {home.resolve(): self._clean(writers=(peer,))})
