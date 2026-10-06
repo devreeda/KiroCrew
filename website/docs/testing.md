@@ -269,7 +269,13 @@ shown to fix anything.
 
 The cases below are where these rules came from. Each one is a rule for every new or
 changed test, and `AUTOSDE.yaml`'s `frontend-tests-are-deterministic` holds review to
-them.
+them. The backend's `test/test_flake_pattern_ratchet.py` also counts six of these
+shapes per file (J1-J6: promise-sleeps, `waitForTimeout`, unpinned `Date`, `isVisible`
+branches, elapsed-time upper bounds, unrestored fake timers) and fails a change that
+raises a file's count above its count at the change's merge-base; a line that keeps one
+on purpose carries `// flake-ok: <reason>` with a reason of ten characters or more.
+CI's backend checkout is depth 1 today, so there it warns `compared nothing`: run
+`python -m pytest -n0 test/test_flake_pattern_ratchet.py` before pushing.
 
 - **Time.** A test whose output reads the clock pins it with `vi.setSystemTime(...)`,
   set after the last real-timer wait (with fake timers, see the fake-timer rule below).

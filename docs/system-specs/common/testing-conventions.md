@@ -113,6 +113,31 @@ A line that must keep one of these shapes on purpose carries `# flake-ok: <reaso
 (`// flake-ok: <reason>` in TypeScript) with a concrete reason. Review accepts the
 marker, and the reason is the record of why the rule does not apply there.
 
+`test/test_flake_pattern_ratchet.py` counts most of these shapes file by file and
+fails a change that raises any file's count above that file's count at the change's
+merge-base: `FLAKE_RATCHET_BASE` when set, the first parent of a CI merge commit,
+else the newer merge-base with `upstream/main` or `origin/main` (fetch the remote
+your branch was cut from: `upstream` for a fork). The working tree is judged,
+untracked files included. A new file starts at zero, a deleted file passes, a rename
+git detects keeps its count, and a rise is forgiven only for a site that moved (the
+same class in an identical enclosing function, or the same line in TypeScript, that
+left another file in the same change). When no merge-base is readable, the test warns
+`compared nothing` and passes rather than judge a change by sites other merged
+changes added. CI's Backend Tests checkout is depth 1 today, so on CI the ratchet
+gates nothing until that checkout keeps the merge commit's parents; run
+`python -m pytest -n0 test/test_flake_pattern_ratchet.py` before pushing. Its `PY_DETECTORS` and `JS_DETECTORS` tables
+name the twenty classes it counts: sleeps before an assertion, rebound stdlib clocks,
+a bare `monkeypatch.undo()`, reloads and raw environment writes, naive local time,
+duration bounds, literal waits under two seconds (the too-tight lost-run bound of
+class 6; a negative such as `assert not done.wait(0.3)` is not one), unseeded
+randomness, literal listener ports, autouse fixtures on the shared `monkeypatch`,
+fixed crew-log flush ceilings, crew-log removals outside `eager.paused()`, and their
+frontend counterparts. It does not count an order assertion (D4) or a network call
+(D10): those rest on review. A `flake-ok` line whose reason has ten characters or more,
+words and not just punctuation or digits, is not counted, and for an autouse fixture
+the marker goes on its `def` or decorator line. `python test/test_flake_pattern_ratchet.py` prints each file's current counts as
+the burn-down view; no committed file holds them.
+
 ## Patterns
 
 ### Grouping

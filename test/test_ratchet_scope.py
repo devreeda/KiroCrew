@@ -558,3 +558,154 @@ def test_env_base_gates_delegate_to_the_shared_plumbing() -> None:
         source = (ROOT / "scripts" / name).read_text(encoding="utf-8")
         assert "ratchet_scope.py" in source, f"{name} no longer uses the shared plumbing"
         assert r"\+(\d+)(?:,(\d+))?" not in source, f"{name} grew a private hunk parser back"
+
+
+# ── fork-aware helpers (change_merge_base / change_files / show_at) ────
+
+
+class _RepoHelper:
+    """A tiny ``Repo`` wrapper holding a ``git(*argv)`` runner so a fixture can keep both."""
+
+    def __init__(self, root: Path) -> None:
+        self.root = root
+
+    def git(self, *argv: str) -> str:
+        return subprocess.run(
+            ["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid", *argv],
+            cwd=self.root,
+            check=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        ).stdout.strip()
+
+    def __truediv__(self, name: str) -> Path:
+        return self.root / name
+
+
+class TestChangeMergeBase:
+    """The change-shaped base resolver, for a per-file comparison that must handle a
+    forked ``origin`` and a shallow CI checkout.
+    """
+
+    @pytest.fixture
+    def repo(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> _RepoHelper:
+        monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+        monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+        root = tmp_path / "repo"
+        root.mkdir()
+        repo = _RepoHelper(root)
+        (root / "a.txt").write_text("one\n", encoding="utf-8")
+        repo.git("init", "-q")
+        repo.git("checkout", "-q", "-b", "main")
+        repo.git("add", "-A")
+        repo.git("commit", "-q", "-m", "base")
+        repo.git("checkout", "-q", "-b", "change")
+        (root / "b.txt").write_text("two\n", encoding="utf-8")
+        repo.git("add", "-A")
+        repo.git("commit", "-q", "-m", "add b.txt")
+        return repo
+
+    def test_the_local_base_branch_is_used_when_nothing_else_resolves(
+        self, repo: _RepoHelper
+    ) -> None:
+        base, how = scope.change_merge_base(cwd=repo.root, env={})
+        assert base == repo.git("rev-parse", "main") and "main" in how
+
+    def test_a_fork_s_stale_origin_loses_to_a_newer_upstream(self, repo: _RepoHelper) -> None:
+        # upstream/main picks up a commit origin/main has not (the fork lags).
+        repo.git("checkout", "-q", "main")
+        stale_main = repo.git("rev-parse", "main")
+        (repo / "c.txt").write_text("three\n", encoding="utf-8")
+        repo.git("add", "-A")
+        repo.git("commit", "-q", "-m", "merged upstream")
+        new_main = repo.git("rev-parse", "main")
+        # change rebases onto the new main so its merge-base with upstream/main is new_main.
+        repo.git("checkout", "-q", "change")
+        repo.git("rebase", "-q", "main")
+        repo.git("update-ref", "refs/remotes/origin/main", stale_main)
+        repo.git("update-ref", "refs/remotes/upstream/main", new_main)
+        base, how = scope.change_merge_base(cwd=repo.root, env={})
+        assert base == new_main and "upstream/main" in how
+
+    def test_the_env_override_wins_and_an_unresolvable_value_is_rejected(
+        self, repo: _RepoHelper
+    ) -> None:
+        change = repo.git("rev-parse", "change")
+        base, how = scope.change_merge_base(cwd=repo.root, env={"FLAKE_RATCHET_BASE": "change"})
+        assert base == change and "FLAKE_RATCHET_BASE" in how
+        assert (
+            scope.change_merge_base(cwd=repo.root, env={"FLAKE_RATCHET_BASE": "no-such-ref"})[0]
+            is None
+        )
+
+    def test_a_pull_request_merge_commit_s_first_parent_is_the_base(
+        self, repo: _RepoHelper
+    ) -> None:
+        before = repo.git("rev-parse", "main")
+        repo.git("checkout", "-q", "main")
+        repo.git("merge", "-q", "--no-ff", "-m", "merge", "change")
+        base, how = scope.change_merge_base(cwd=repo.root, env={"GITHUB_BASE_REF": "main"})
+        assert base == before and "first parent" in how
+
+    def test_a_push_event_uses_the_first_parent_too(self, repo: _RepoHelper) -> None:
+        before = repo.git("rev-parse", "HEAD")
+        (repo / "a.txt").write_text("edited\n", encoding="utf-8")
+        repo.git("commit", "-q", "-am", "another")
+        base, how = scope.change_merge_base(cwd=repo.root, env={"GITHUB_EVENT_NAME": "push"})
+        assert base == before and "push" in how
+
+    def test_an_unreadable_merge_base_returns_none(self, tmp_path: Path, monkeypatch) -> None:
+        monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+        monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path.parent))
+        root = tmp_path / "bare"
+        root.mkdir()
+        assert scope.change_merge_base(cwd=root, env={})[0] is None
+
+
+class TestChangeFilesAndShowAt:
+    """``change_files`` reports (base path, now path) for each file the working tree
+    changes against *base*, and ``show_at`` reads a file's bytes at that base."""
+
+    @pytest.fixture
+    def repo(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> _RepoHelper:
+        monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+        monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+        root = tmp_path / "repo"
+        root.mkdir()
+        repo = _RepoHelper(root)
+        (root / "a.txt").write_text("one\n", encoding="utf-8")
+        (root / "b.txt").write_text("two\n", encoding="utf-8")
+        (root / "to_delete.txt").write_text("gone\n", encoding="utf-8")
+        repo.git("init", "-q")
+        repo.git("checkout", "-q", "-b", "main")
+        repo.git("add", "-A")
+        repo.git("commit", "-q", "-m", "base")
+        repo.git("checkout", "-q", "-b", "change")
+        return repo
+
+    def _base(self, repo: _RepoHelper) -> str:
+        return repo.git("rev-parse", "main")
+
+    def test_adds_deletes_renames_copies_and_untracked_are_paired_right(
+        self, repo: _RepoHelper
+    ) -> None:
+        # one of each kind that change_files pairs: modify, rename, delete, add, untracked.
+        (repo / "a.txt").write_text("edited\n", encoding="utf-8")  # modify
+        repo.git("mv", "b.txt", "c.txt")  # rename
+        (repo / "e.txt").write_text("tracked add\n", encoding="utf-8")
+        repo.git("add", "e.txt")  # tracked add
+        repo.git("rm", "-q", "to_delete.txt")  # delete
+        (repo / "untracked.txt").write_text("outside git\n", encoding="utf-8")  # untracked
+        pairs = scope.change_files(self._base(repo), cwd=repo.root)
+        assert ("a.txt", "a.txt") in pairs
+        assert ("b.txt", "c.txt") in pairs
+        assert ("to_delete.txt", None) in pairs
+        assert (None, "e.txt") in pairs
+        assert (None, "untracked.txt") in pairs
+
+    def test_show_at_reads_bytes_at_the_base_and_returns_none_for_absent(
+        self, repo: _RepoHelper
+    ) -> None:
+        assert scope.show_at(self._base(repo), "a.txt", cwd=repo.root) == "one\n"
+        assert scope.show_at(self._base(repo), "nope.txt", cwd=repo.root) is None
