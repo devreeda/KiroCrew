@@ -200,7 +200,33 @@ def _url_payload_command(n: int) -> str:
 #: linear on a hostile input. The floor delegates substitution/backtick/xargs/brace
 #: scanning to the shared ``shell_normalizer`` / ``argv_floor`` helpers rather than
 #: carrying private copies.
-_PACKAGE_LINE_BUDGET = 31_260
+#:
+#: Raised once more for the GPT 6.1 review-round fixes to this floor: xargs
+#: ``--replace``/``--replace=VALUE`` replace-string detection, a projected-byte +
+#: count overflow that fails CLOSED to the deny sentinel (never an appended argv),
+#: and preserving a reconstructed-argv home verdict through the final quoted-home
+#: suppression. All three are added security logic plus their reason comments.
+#:
+#: Raised again for two more review-round fixes: re-quoting a dequoted xargs
+#: operand on serialization so a quoted ``;``/``|`` literal is not read back as a
+#: command boundary that hides the home/root target, and bounding a ``printf``
+#: producer's projected stdout (fail-closed deny on overflow) so a reused format x
+#: many args cannot exceed the synchronous gate's watchdog.
+#:
+#: Raised once more for a cumulative brace-materialization byte budget
+#: (``_RM_EXPANSION_BYTE_BUDGET``): the per-word count cap and per-span
+#: classification cap do not bound the BYTES a word's members carry, so a word at
+#: the count cap with large members, re-materialized once per span, stalled the
+#: synchronous gate past its watchdog; once the budget is exhausted a span falls
+#: back to the cheap root/home-shape verdict instead of materializing members.
+#:
+#: Raised again for the general-path overflow fix: the xargs-replace overflow
+#: sentinel (``rm -rf / ~``) is now path-specific. The rm-floor path still fails
+#: closed to it, but the GENERAL payload scan passes the bounded appended push
+#: shape as its overflow fallback, so an overflowing ``xargs -I{} git push --force
+#: origin {}`` stays classifiable as a protected-branch push with the rm rules
+#: disabled, instead of becoming an rm shape that only the rm floor would catch.
+_PACKAGE_LINE_BUDGET = 31_468
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

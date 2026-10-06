@@ -209,6 +209,18 @@ _RM_DESCENT_BUDGET = 64
 #: catches only the contiguous spelling.
 _RM_CLASSIFY_SPAN_CAP = 64
 
+#: Cumulative byte ceiling on brace members materialized across ALL ``rm`` spans
+#: of one argv. The per-WORD ``_BRACE_EXPANSION_CAP`` bounds the member COUNT of a
+#: single word and ``_RM_CLASSIFY_SPAN_CAP`` bounds how many spans are classified,
+#: but neither bounds the BYTES a word's members carry: a word AT the count cap
+#: whose members are each large (``"a"*16000 + "{a,b}"*8`` -> 256 members x ~16 KB)
+#: re-materialized once per span still costs ~116 CPU s across 64 spans, past the
+#: 25 s gate watchdog (GPT 6.1). Bound the total expanded bytes BEFORE
+#: materialization; once exhausted a span stops expanding and falls back to the
+#: CHEAP per-span root/home-shape verdict (``span_overflow_targets``), already
+#: proven not to newly refuse a legitimate descendant cleanup.
+_RM_EXPANSION_BYTE_BUDGET = 1_000_000
+
 #: Max substitution openers (``$(`` / backtick) the structural walk runs on. Each
 #: seeds a frame, so a chain (``"$( " * 1000``) makes the walk O(openers²) and runs
 #: for minutes (Opus perf). Beyond this the expensive descent is skipped but the
@@ -937,6 +949,11 @@ def _recursive_force_rm_targets(
         ):
             found.discard("home")
         return frozenset(found)
+    # A ``home`` verdict confirmed from a RECONSTRUCTED xargs argv (the shell's own
+    # resolved operand) is exempt from the final quoted-home suppression below,
+    # which re-checks only the ORIGINAL text and cannot see the reconstructed
+    # operand (GPT 6.1 F3). Set by the xargs reconstruction loop; false otherwise.
+    xargs_live_home = False
     # Cap how many frames are CLASSIFIED. A pathological opener chain
     # (``"$( " * 1000``) makes the shell walk emit a frame per opener; classifying
     # every one is O(frames × span) and ran for minutes on the synchronous gate
@@ -1068,7 +1085,17 @@ def _recursive_force_rm_targets(
         for xargs_cmd in _shell_normalizer._xargs_reconstructed_command_with_flags(
             _split_shell_words(source)
         ):
-            found |= _rm_targets_in_argv(_split_shell_words(xargs_cmd), strip_quotes=True)
+            x_targets = _rm_targets_in_argv(_split_shell_words(xargs_cmd), strip_quotes=True)
+            found |= x_targets
+            # A ``home`` verdict here is built from the RECONSTRUCTED argv the shell
+            # actually runs (producer output substituted into rm's operand), so it
+            # is a CONFIRMED live home target even when the operand resolves through
+            # dot segments to an absolute path (``/home/alice/../alice`` == home).
+            # The original ``text_lower`` carries no such operand, so the final
+            # quoted-home suppression would otherwise discard it and fail open (GPT
+            # 6.1 F3).
+            if "home" in x_targets:
+                xargs_live_home = True
         if {"root", "home"} <= found:
             break
     # An EXECUTED shell ``-c`` payload (``bash -c 'rm -fr "$HOME"'``) runs in a
@@ -1096,12 +1123,15 @@ def _recursive_force_rm_targets(
     # A quoted-literal ``'~'`` / ``'$HOME'`` is a cwd file the shell never expands;
     # drop a ``home`` verdict with NO live home expansion (Security Scope). A real
     # ``$HOME``/``~``, an EXECUTED ``-c`` payload verdict (quote state applied
-    # above), or an ABSOLUTE-PATH equality (``rm -fr /home/alice`` = real home, no
-    # ``$HOME``/``~`` token) all KEEP it — the last would wrongly drop, a common
-    # irreversible-wipe spelling (GPT 6.1 F3).
+    # above), a RECONSTRUCTED xargs-argv verdict (``xargs_live_home`` — the shell's
+    # own resolved operand, which the original text does not carry), or an
+    # ABSOLUTE-PATH equality (``rm -fr /home/alice`` = real home, no ``$HOME``/``~``
+    # token) all KEEP it — any would wrongly drop a common irreversible-wipe
+    # spelling (GPT 6.1 F3).
     if (
         "home" in found
         and not payload_live_home
+        and not xargs_live_home
         and not _rm_has_live_home_expansion(text_lower)
         and not _rm_absolute_home_operand(text_lower)
     ):
@@ -1819,6 +1849,13 @@ def _rm_targets_in_argv(
     #: (``sudo rm -fr rm rm …``) at O(1) per operand instead of rescanning the span
     #: suffix for every operand named ``rm`` (O(n²), past the gateway watchdog).
     span_overflow_targets: frozenset[str] = frozenset()
+    #: Cumulative bytes of brace members materialized across every span so far. A
+    #: single word AT the per-word count cap can still carry large members, and the
+    #: span loop re-materializes a word's members once per span, so this is the only
+    #: bound on the TOTAL expansion work (GPT 6.1). Once it crosses
+    #: ``_RM_EXPANSION_BYTE_BUDGET`` no further span materializes members: each falls
+    #: back to the cheap ``span_overflow_targets`` shape verdict instead.
+    expansion_bytes = 0
     for i, token in enumerate(tokens):
         is_program_word = (
             expect_program and bool(token) and not _shell_normalizer.ENV_ASSIGNMENT_RE.match(token)
@@ -1908,6 +1945,18 @@ def _rm_targets_in_argv(
                 break
             continue
         rm_spans_classified += 1
+        # Cumulative brace-materialization budget (GPT 6.1): once the total expanded
+        # bytes across prior spans crossed the ceiling, do NOT run the full
+        # structural pass for this span (its ``for arg in expanded_args`` walk is
+        # what the materialized bytes feed). Fall back to the same CHEAP per-span
+        # root/home-shape verdict the span-count overflow uses — it reads the raw
+        # operand tokens once with no brace materialization, so it is bounded and
+        # does not newly refuse a legitimate descendant cleanup.
+        if expansion_bytes > _RM_EXPANSION_BYTE_BUDGET:
+            found |= span_overflow_targets
+            if {"root", "home"} <= found:
+                break
+            continue
         # STRUCTURAL classification (below) denies the EXACT root/home target for
         # ANY ``rm`` — direct, dispatcher applet, or EXEC-WRAPPER reached. base's
         # DESCENDANT coverage (``rm -rf /etc``, ``rm -rf ~/.ssh``) is reproduced by
@@ -1935,6 +1984,10 @@ def _rm_targets_in_argv(
         # statically-decidable alternation members BEFORE flag/operand parsing;
         # non-brace expands to itself. Bounded by ``_RM_BRACE_EXPANSION_CAP``.
         expanded_args: list[str] = []
+        #: Set when this span's brace materialization crossed the cumulative byte
+        #: budget mid-expansion (GPT 6.1): the structural pass below is then skipped
+        #: and the cheap per-span shape verdict is used instead.
+        brace_budget_exhausted = False
         for raw_arg in tokens[i + 1 :]:
             # An unquoted word starting with ``#`` opens a shell COMMENT — discarded
             # with the rest of the line, never an ``rm`` operand (``rm -rf dist #
@@ -1947,7 +2000,18 @@ def _rm_targets_in_argv(
             # per-span ``brace_overflow`` fail-closed below, plus the deny-net regex,
             # still catch a catastrophic member).
             members = _brace_expansions(raw_arg)
-            expanded_args.extend(members if members else [raw_arg])
+            produced = members if members else [raw_arg]
+            # Charge the materialized members against the cumulative byte budget
+            # (GPT 6.1). A word at the per-word count cap can still carry 256 x
+            # ~16 KB members, and this loop runs once per span, so without a byte
+            # bound a 64-span chain costs ~116 CPU s past the gate watchdog. Once the
+            # running total crosses the ceiling, stop expanding this span and fall
+            # back to the cheap shape verdict below — never materialize the overflow.
+            expansion_bytes += sum(len(w) for w in produced)
+            if expansion_bytes > _RM_EXPANSION_BYTE_BUDGET:
+                brace_budget_exhausted = True
+                break
+            expanded_args.extend(produced)
             # Stop at THIS ``rm``'s command boundary — an unescaped ``;``/``&``/
             # ``|``/newline ends the command, so a later command's operands are not
             # brace-expanded (``rm a ;`` + brace blobs is O(commands × operands); GPT
@@ -1961,6 +2025,16 @@ def _rm_targets_in_argv(
                 _boundary_did_peel = _boundary_arg != raw_arg
                 if not _boundary_did_peel and _rm_unescaped_boundary(_boundary_arg) is not None:
                     break
+        if brace_budget_exhausted:
+            # This span's expansion crossed the cumulative byte ceiling: do not run
+            # the structural pass over a partially-materialized operand list (it
+            # would be both unbounded-costly on the next span and incomplete here).
+            # Use the cheap per-span root/home-shape verdict, computed from the raw
+            # operand tokens with no materialization (GPT 6.1).
+            found |= span_overflow_targets
+            if {"root", "home"} <= found:
+                break
+            continue
         for arg in expanded_args:
             operand = _strip_outer_quotes(arg) if strip_quotes else arg
             quote_peeled = operand != arg

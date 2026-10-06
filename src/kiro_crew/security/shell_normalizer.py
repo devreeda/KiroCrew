@@ -1393,6 +1393,18 @@ def _strip_outer_quotes(token: str) -> str:
     return t
 
 
+#: Ceiling on a ``printf`` producer's projected stdout. The format is reused per
+#: batch of args, so a long format x many args projects to tens of MB that killed
+#: the synchronous gate's watchdog (GPT 6.1 F2). Past it the producer resolves to
+#: the deny sentinel instead of its real (un-tokenisable) output.
+_PRODUCER_OUTPUT_BYTE_CAP = 1 << 20  # 1 MiB
+
+#: Fail-closed producer output for an overflow. Fed to the xargs reconstruction as
+#: rm's operands it rebuilds ``rm <flags> / ~``, so the floor denies (root + home)
+#: rather than leaving an un-analysable wipe unclassified.
+_PRODUCER_OVERFLOW_DENY = "/ ~"
+
+
 def _static_producer_output(producer: "list[str]") -> "str | None":
     """The STATIC stdout of an ``echo``/``printf`` producer, or ``None``.
 
@@ -1440,6 +1452,7 @@ def _static_producer_output(producer: "list[str]") -> "str | None":
         pieces: "list[str]" = []
         i = 0
         rest = rest or [""]
+        projected = 0
         while i < len(rest):
             batch = rest[i : i + n_spec]
             # Pad a short final batch with empty strings, as ``printf`` does.
@@ -1447,6 +1460,15 @@ def _static_producer_output(producer: "list[str]") -> "str | None":
             out = fmt
             for a in batch:
                 out = out.replace("%s", a, 1)
+            # The format is reused per batch, so a long format x many batches can
+            # project to tens of MB (GPT 6.1 F2: an 8KB format with 3000 args emits
+            # 24MB) and tokenizing it synchronously killed the gateway's watchdog.
+            # Bound the projected output BEFORE accumulating; on overflow deny (fail
+            # CLOSED) rather than return an unclassified producer, which would let
+            # the wrapped wipe through.
+            projected += len(out)
+            if projected > _PRODUCER_OUTPUT_BYTE_CAP:
+                return _PRODUCER_OVERFLOW_DENY
             pieces.append(out)
             i += n_spec
         return _decode_printf_escapes("".join(pieces))
@@ -1703,6 +1725,21 @@ def _reconstruct_one_xargs(
         # site, as in ``-I % kirocrew %``) -- not when the next word is the invoked
         # PROGRAM (``-i kirocrew {}``: ``kirocrew`` does not recur, ``{}`` does), so
         # the program word is never swallowed (Opus 5.5 round-4 credential-mint).
+        # GNU long form ``--replace`` / ``--replace=VALUE`` is replace-string mode
+        # too (bare ``--replace`` defaults the token to ``{}``). It matches neither
+        # ``-i``/``-I`` nor their prefix, so without this branch it fell into APPEND
+        # mode and a home wipe built from an ordinary long option was allowed (GPT
+        # 6.1 F1, security-class). A bare ``--replace`` consumes the next word as the
+        # token only when it RECURS later (the real replacement site), never the
+        # invoked PROGRAM word.
+        if opt == "--replace" or opt.startswith("--replace="):
+            replace_mode = True
+            if opt.startswith("--replace="):
+                replace_token = opt[len("--replace=") :] or "{}"
+            elif k < len(rest) and not rest[k].startswith("-") and rest[k] in rest[k + 1 :]:
+                replace_token = rest[k]
+                k += 1
+            continue
         if opt == "-i" or opt == "-I" or opt.startswith(("-i", "-I")):
             replace_mode = True
             if opt not in ("-i", "-I"):
@@ -1807,21 +1844,33 @@ def _reconstruct_one_xargs(
                     continue
                 if _program_basename(fb_prog) in static_out:
                     piped.append(bare)
-        appended = " ".join(command + [_dequote_token(p) for p in piped])
+        appended = _xargs_serialize(command + [_dequote_token(p) for p in piped])
         if replace_mode:
             if not piped:
-                return [" ".join(command)]
+                return [_xargs_serialize(command)]
             # ``xargs -I`` runs the command ONCE PER INPUT RECORD, so every record is
             # substituted and classified -- not only the first (GPT 6.1:
             # ``printf '%s\\n' feature main | xargs -I{} git push --force origin {}``
             # pushes ``main`` second). Records come from the producer's static
             # output when it resolves (a printf format is not a record); otherwise
             # each piped word is a record AND the base append shape is kept.
+            # The general scan's overflow fallback is the BOUNDED appended push
+            # shape (``<command> <records>`` joined once), NOT the rm deny sentinel:
+            # the sentinel would hide the ``git push ...`` the protected-branch rule
+            # must see, letting an overflowing push bypass with rm rules disabled
+            # (GPT 6.1). ``appended`` is linear in input size, so it bounds the DoS.
             static = _static_producer_output(producer)
             if static is not None:
-                return _xargs_replace_commands(command, replace_token, _xargs_output_words(static))
+                return _xargs_replace_commands(
+                    command,
+                    replace_token,
+                    _xargs_output_words(static),
+                    overflow_fallback=[appended],
+                )
             records = [_dequote_token(p) for p in piped]
-            return _xargs_replace_commands(command, replace_token, records) + [appended]
+            return _xargs_replace_commands(
+                command, replace_token, records, overflow_fallback=[appended]
+            ) + [appended]
         return [appended]
     # rm-floor variant: resolve the producer to its STATIC stdout.
     produced = _static_producer_output(producer)
@@ -1830,12 +1879,17 @@ def _reconstruct_one_xargs(
         # the (dequoted) replace token, one command per record. A non-static
         # producer leaves the template unresolved -> classify as-is (base parity).
         if produced is None:
-            return [" ".join(command)]
-        return _xargs_replace_commands(command, replace_token, _xargs_output_words(produced))
+            return [_xargs_serialize(command)]
+        return _xargs_replace_commands(
+            command,
+            replace_token,
+            _xargs_output_words(produced),
+            overflow_fallback=list(_XARGS_REPLACE_OVERFLOW_DENY),
+        )
     # Append mode: xargs appends the producer OUTPUT after the command's argv.
     if produced is None:
         return []
-    return [" ".join(command + _xargs_output_words(produced))]
+    return [_xargs_serialize(command + _xargs_output_words(produced))]
 
 
 #: Where a static producer's stdout splits into xargs input records: whitespace, a
@@ -1864,22 +1918,102 @@ def _xargs_literal_word(word: str) -> str:
     return f'"{escaped}"'
 
 
+def _xargs_serialize(words: "list[str]") -> str:
+    """Join reconstructed command words so a re-split reads each back as ONE word.
+
+    The invoked command's operands are shell-DEQUOTED before classification, so a
+    quoted literal operand (``'a;b'``) becomes the bare ``a;b``; joining it raw let
+    the floor read the ``;`` as a command boundary and miss a later home/root
+    operand (GPT 6.1 F1 security-class: ``echo ~ | xargs rm -fr 'a;b'`` ->
+    ``rm -fr a;b ~``). Quote only words carrying a COMMAND-CONTROL char
+    (``;`` ``&`` ``|`` ``<`` ``>`` ``(`` ``)`` backtick ``#`` newline) -- the ones a
+    re-split would read as structure. WHITESPACE is deliberately NOT a trigger: a
+    producer record is a multi-word string whose spaces MUST re-split into separate
+    argv words (``echo 'push origin main' | xargs git`` rebuilds ``git push origin
+    main``, three words, not one quoted ``"push origin main"``).
+    """
+    return " ".join(
+        (
+            '"' + "".join("\\" + c if c in '"\\`' else c for c in w) + '"'
+            if any(c in _XARGS_CONTROL_CHARS for c in w)
+            else w
+        )
+        for w in words
+    )
+
+
+#: Shell chars that END or REDIRECT a command, so an unquoted one in a rebuilt
+#: operand would be read as structure by a re-split. Whitespace, globs and quote
+#: chars are excluded: whitespace must re-split producer records into argv words,
+#: and a glob/quote in an operand does not open a command boundary.
+_XARGS_CONTROL_CHARS = frozenset(";&|<>()`#\n\r")
+
+
 #: Ceiling on (records x command words) when ``xargs -I`` expands one command per
-#: record. Past it the rebuild falls back to ONE command with every record
-#: appended -- the conservative base shape, which still names every record.
+#: record, and on the PROJECTED substituted bytes checked BEFORE any string is
+#: built. The count cap alone counts records x command words but not how many times
+#: the replace token recurs INSIDE one word, so one short record substituted into a
+#: token holding thousands of ``{}`` projects to tens of MB and stalled the gate
+#: for tens of seconds (GPT 6.1 DoS). BOTH overflows fail CLOSED to the deny
+#: sentinel -- an append fallback can fail OPEN on a crafted home wipe (GPT 6.1 F1).
 _XARGS_REPLACE_EXPANSION_CAP = 4096
+_XARGS_REPLACE_PROJECTED_BYTE_CAP = 1 << 20  # 1 MiB
+
+#: Fail-closed sentinel the overflow paths return for an un-analysable expansion.
+#: It names BOTH catastrophic targets so the rm-floor classifies it as a denial
+#: (root + home); it carries no product/credential verb, so the general payload
+#: scan reads it as an ordinary wipe literal, never a false self-protect hit.
+_XARGS_REPLACE_OVERFLOW_DENY = ["rm -rf / ~"]
 
 
 def _xargs_replace_commands(
-    command: "list[str]", replace_token: str, records: "list[str]"
+    command: "list[str]",
+    replace_token: str,
+    records: "list[str]",
+    *,
+    overflow_fallback: "list[str]",
 ) -> "list[str]":
-    """One rebuilt command per distinct input record, the replace token substituted."""
+    """One rebuilt command per distinct input record, the replace token substituted.
+
+    ``overflow_fallback`` is what an un-analysable expansion resolves to, and it is
+    PATH-SPECIFIC. The rm-floor path (``keep_flags=True``) passes the root+home deny
+    sentinel so an over-budget wipe fails CLOSED. The general payload scan
+    (``keep_flags=False``) passes the BOUNDED appended reconstruction (``<command>
+    <records>`` joined once) instead: the rm sentinel there replaces the real
+    ``git push ...`` the scan must classify, so with the rm rules disabled an
+    overflowing ``xargs -I{} git push --force origin {}`` to a protected branch is
+    read as an rm (nothing enabled denies it) and bypasses the protected-branch rule
+    (GPT 6.1 security-class, :1963). The appended fallback is linear in input size --
+    one join, no per-record expansion -- so it bounds the DoS while keeping the push
+    verb visible to the enabled rules.
+    """
     unique = list(dict.fromkeys(r for r in records if r))
     if not unique:
-        return [" ".join(command)]
+        return [_xargs_serialize(command)]
+    # Count overflow: fail to the path's fallback, not the appended argv -- for the
+    # rm-floor path that is the deny sentinel (the appended argv dropped the
+    # substitution and allowed a home wipe spread across many records, GPT 6.1 F1:
+    # 1400 records + ``../alice`` | xargs -IX rm -fr "$HOME/X"); for the general scan
+    # it is the bounded appended push shape so the protected-branch rule still fires.
     if len(unique) * max(len(command), 1) > _XARGS_REPLACE_EXPANSION_CAP:
-        return [" ".join(command + unique)]
-    return [" ".join(tok.replace(replace_token, rec) for tok in command) for rec in unique]
+        return list(overflow_fallback)
+    # Byte overflow: a token holding N replace tokens grows by
+    # ``N * (len(rec) - len(replace_token))`` per record. Project the total BEFORE
+    # allocating; past the budget resolve to the path's fallback (GPT 6.1).
+    tok_len = sum(len(tok) for tok in command) + max(len(command) - 1, 0)
+    rt_len = len(replace_token)
+    occ = sum(tok.count(replace_token) for tok in command) if rt_len else 0
+    projected = 0
+    for rec in unique:
+        projected += tok_len + occ * (len(rec) - rt_len)
+        if projected > _XARGS_REPLACE_PROJECTED_BYTE_CAP:
+            return list(overflow_fallback)
+    # Substitute the record INTO each token, then serialize with literal quoting so
+    # a record carrying shell punctuation (``a;b``) stays one word and does not open
+    # a command boundary inside the rebuilt command (GPT 6.1 F1).
+    return [
+        _xargs_serialize([tok.replace(replace_token, rec) for tok in command]) for rec in unique
+    ]
 
 
 def _xargs_reconstructed_command_with_flags(tokens: "list[str]") -> "list[str]":

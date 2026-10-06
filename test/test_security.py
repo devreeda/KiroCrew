@@ -4224,6 +4224,52 @@ class TestBuiltinDenyPatterns:
             is not None
         )
 
+    def test_rm_rf_brace_byte_budget_bounds_total_expansion(self) -> None:
+        """The per-word brace COUNT cap and the per-span classification cap do not
+        bound the BYTES a word's members carry: a word AT the count cap whose
+        members are each large, materialized once per span, costs ~116 CPU s past
+        the 25 s gate watchdog (GPT 6.1). The cumulative byte budget caps the total
+        expansion; once exhausted a span falls back to the cheap root/home-shape
+        verdict, which must still deny a real wipe and still allow a descendant.
+        """
+        from kiro_crew.security import is_denied
+        from kiro_crew.security import rm_floor as _rf
+
+        rm = "r" + "m"
+        home = "$" + "HOME"
+        # The reported stall: 64 ``rm`` words then one 16 000-char operand glued to
+        # 256 brace members (``"{a,b}"*8`` == the per-word count cap, NOT over it).
+        # It targets a cwd descendant (``./a…``), so the correct verdict is ALLOW —
+        # the regression is purely the unbounded work, so assert it stays bounded.
+        brace = "{a,b}" * 8
+        dos = "timeout 1 " + (f"{rm} " * 64) + "-fr ./" + ("a" * 16000) + brace
+        assert len(dos) < 20000  # below the scan ceiling, as in the finding
+        assert is_denied(dos) is None  # a cwd descendant, allowed (base parity)
+
+        # Fail-CLOSED past the budget: a budget-exhausting span whose operand IS
+        # root / home / an empty-member brace frame completing to ``/`` must still
+        # deny via the cheap shape verdict — never fail open behind the budget.
+        assert is_denied(f"{rm} -fr " + ("a" * 16000) + brace + " /") is not None
+        assert is_denied(f"{rm} -fr ~ " + ("b" * 16000) + brace) is not None
+        assert is_denied(f'{rm} -fr "{home}" ' + ("c" * 16000) + brace) is not None
+        assert is_denied(f"{rm} -fr " + ("d" * 16000) + brace + " /{,bin}") is not None
+
+        # Deterministic bound: the cumulative materialized bytes never exceed the
+        # budget by more than one span's final (over-budget) word, regardless of
+        # how many heavy spans the argv chains. Measured directly on the classifier
+        # so no wall-clock flake: scaling the span count 4x must not scale cost ~16x.
+        import time as _t
+
+        def _elapsed(cmd: str) -> float:
+            t0 = _t.time()
+            _rf._recursive_force_rm_targets(cmd.lower(), raw_text=cmd)
+            return max(_t.time() - t0, 1e-4)
+
+        heavy = "-fr ./" + ("a" * 16000) + brace
+        small = _elapsed(f"{rm} {heavy} ; " * 2)
+        large = _elapsed(f"{rm} {heavy} ; " * 8)
+        assert large / small < 8.0, f"brace byte budget scales super-linearly: {large / small:.1f}x"
+
     def test_no_shell_active_construct_is_ever_exonerated(self) -> None:
         """A command hidden in any expansion behind a search verb must stay denied.
 
@@ -5296,6 +5342,209 @@ class TestBuiltinDenyPatterns:
             assert is_denied(cmd) is None, cmd
         assert is_denied(f"echo /tmp/x|xargs {rm} -rf") is None
         assert is_denied(f"echo foo.txt|xargs {rm} -f") is None
+
+    def test_rm_rf_xargs_long_replace_option_is_classified(self) -> None:
+        """GPT 6.1 F1 (UPHOLD-FENCED): GNU ``xargs --replace`` / ``--replace=VALUE``
+        is replace-string mode just like ``-I``/``-i``. The option matches neither
+        ``-i``/``-I`` nor their prefix, so without recognising it the invocation
+        fell into APPEND mode and a home wipe built from an ordinary long option was
+        ALLOWED. ``echo ../<home-base> | xargs --replace=X rm -fr $HOME/X``
+        substitutes ``X`` and wipes home, so it is DENIED; a bare ``--replace`` with
+        a recurring ``{}`` token too. A benign descendant stays ALLOWED."""
+        import os
+
+        from kiro_crew.security import is_denied
+
+        rm = "r" + "m"
+        dollar = "$"
+        home_base = os.path.basename(os.path.expanduser("~"))
+        brace = "{}"
+        for cmd in (
+            f"echo ../{home_base} | xargs --replace=X {rm} -fr {dollar}HOME/X",
+            f"echo ../{home_base} | xargs --replace {rm} -fr {dollar}HOME/{brace}",
+            f"echo / | xargs --replace=X {rm} -fr X",
+        ):
+            assert is_denied(cmd) is not None, cmd
+        # A descendant target substituted through --replace stays allowed.
+        assert is_denied(f"echo build | xargs --replace=X {rm} -rf ./X") is None
+
+    def test_rm_rf_xargs_reconstructed_absolute_home_operand_is_denied(self) -> None:
+        """GPT 6.1 F3 (UPHOLD-FENCED): a ``home`` verdict built from the
+        RECONSTRUCTED xargs argv (the shell's own resolved operand) must survive the
+        final quoted-home suppression, which re-checks only the ORIGINAL text and
+        cannot see the reconstructed operand. ``echo ../<home-base> | xargs -IX rm
+        -fr /home/.../X`` reconstructs ``/home/.../../<home-base>`` which collapses to
+        home, so it is DENIED; dropping it on the original-text check failed open.
+        A reconstructed operand that collapses OUTSIDE home stays ALLOWED."""
+        import os
+
+        from kiro_crew.security import is_denied
+
+        rm = "r" + "m"
+        home_real = os.path.expanduser("~")
+        home_base = os.path.basename(home_real)
+        # A reconstructed operand that resolves to a non-home absolute path is
+        # allowed -- holds on every platform.
+        assert is_denied(f"echo ../other | xargs -IX {rm} -fr {home_real}/X") is None
+        # The floor's home classification is ``/``-rooted (``expanduser`` POSIX);
+        # a drive-path home (Windows CI) deliberately forms no home verdict, so the
+        # absolute-home denial assertion only applies where home is POSIX-rooted.
+        if home_real.startswith("/"):
+            assert is_denied(f"echo ../{home_base} | xargs -IX {rm} -fr {home_real}/X") is not None
+
+    def test_rm_rf_xargs_replace_expansion_cannot_stall_the_gate(self) -> None:
+        """GPT 6.1 F2 (UPHELD DoS): the record-count expansion cap counts records x
+        command words but not how many times the replace token recurs inside ONE
+        command word, so a single short record substituted into a token holding
+        thousands of ``{}`` projects to tens of MB and stalls the synchronous gate.
+        The projected byte size is bounded BEFORE allocation and an overflow is
+        failed CLOSED (denied) WITHOUT building the expansion. Asserted on BOUNDED
+        WORK -- the reconstructed output is the short deny sentinel, never the
+        tens-of-MB expansion -- not on wall-clock time, which flakes on a loaded
+        shard (deterministic-test rule). A short, legitimate replace expansion
+        still resolves."""
+        from kiro_crew.security import is_denied
+        from kiro_crew.security.shell_normalizer import (
+            _XARGS_REPLACE_OVERFLOW_DENY,
+            _xargs_replace_commands,
+        )
+
+        rm = "r" + "m"
+        brace = "{}"
+        rec = "a" * 4000
+        tok = brace * 4000
+        # The reconstruction returns the bounded deny sentinel -- it never allocates
+        # the 4000 x 4000 = 16 MB expansion. This is the deterministic DoS guard.
+        rebuilt = _xargs_replace_commands(
+            [rm, "-fr", f"./{tok}"],
+            brace,
+            [rec],
+            overflow_fallback=list(_XARGS_REPLACE_OVERFLOW_DENY),
+        )
+        assert rebuilt == _XARGS_REPLACE_OVERFLOW_DENY
+        assert sum(len(c) for c in rebuilt) < 64  # bounded, not tens of MB
+        # Fail-closed end to end: the overflow is denied, never allowed.
+        cmd = f"echo {rec} | xargs -I{brace} {rm} -fr ./{tok}"
+        assert is_denied(cmd) is not None
+        # A short replace expansion still works (root wipe through -I denied).
+        assert is_denied(f"echo / | xargs -I{brace} {rm} -fr {brace}") is not None
+
+    def test_rm_rf_xargs_replace_count_overflow_fails_closed(self) -> None:
+        """GPT 6.1 F1 (UPHOLD-FENCED): the RECORD-COUNT overflow branch must deny,
+        not fall back to the appended argv. Many distinct records followed by
+        ``../<home-base>`` piped to ``xargs -IX rm -fr "$HOME/X"`` overflow the count
+        cap; the old append fallback dropped the substitution and ALLOWED a home
+        wipe. The branch now returns the deny sentinel, matching the byte-overflow
+        path."""
+        from kiro_crew.security import is_denied
+        from kiro_crew.security.shell_normalizer import (
+            _XARGS_REPLACE_EXPANSION_CAP,
+            _XARGS_REPLACE_OVERFLOW_DENY,
+            _xargs_replace_commands,
+        )
+
+        rm = "r" + "m"
+        records = [str(n) for n in range(_XARGS_REPLACE_EXPANSION_CAP + 10)]
+        rebuilt = _xargs_replace_commands(
+            [rm, "-fr", "X"],
+            "X",
+            records,
+            overflow_fallback=list(_XARGS_REPLACE_OVERFLOW_DENY),
+        )
+        assert rebuilt == _XARGS_REPLACE_OVERFLOW_DENY
+        # End to end: a count-overflow home wipe is denied, never allowed.
+        many = " ".join(records[:1400])
+        cmd = f"printf '%s\\n' {many} ../home | xargs -IX {rm} -fr X"
+        assert is_denied(cmd) is not None
+
+    def test_xargs_replace_general_overflow_keeps_the_push_shape(self) -> None:
+        """GPT 6.1 (UPHOLD-FENCED, :1963): the replace-expansion overflow sentinel
+        ``rm -rf / ~`` is correct ONLY on the rm-floor path. The GENERAL payload scan
+        (``keep_flags=False``) also went through the SAME overflow return, so an
+        overflowing ``xargs -I{} git push --force origin {}`` reconstruction became
+        ``rm -rf / ~`` -- an rm shape. With the rm rules disabled nothing enabled
+        denies an rm, so the overflowing push BYPASSED the protected-branch rule.
+
+        The general path now resolves an overflow to the BOUNDED appended push shape
+        (``git push ... <records>`` joined once), so the ``git-publish`` floor still
+        classifies it as a protected-branch push regardless of the rm floor. The rm
+        sentinel must NOT appear in the general reconstruction, and the end-to-end
+        verdict must be the PUSH rule, not an rm rule."""
+        from kiro_crew.security import is_denied
+        from kiro_crew.security.shell_normalizer import (
+            _XARGS_REPLACE_EXPANSION_CAP,
+            _split_shell_words,
+            _xargs_reconstructed_command,
+        )
+
+        push = "p" + "ush"
+        force = "--for" + "ce"
+        # Enough distinct records to overflow the count cap, then a protected branch.
+        records = [f"br{n}" for n in range(_XARGS_REPLACE_EXPANSION_CAP + 10)] + ["main"]
+        line = "printf '%s\\n' " + " ".join(records) + f" | xargs -IX git {push} {force} origin X"
+        # The GENERAL reconstruction (the path a non-rm payload scan reads) must keep
+        # the push verb and must NOT be the rm sentinel.
+        recon = _xargs_reconstructed_command(_split_shell_words(line))
+        assert recon, "overflow reconstruction must not be empty"
+        assert all(r.strip() != "rm -rf / ~" for r in recon), recon
+        assert any(r.startswith(f"git {push}") and "main" in r for r in recon), recon
+        # End to end the verdict is the PROTECTED-BRANCH PUSH rule (git-publish
+        # floor), proving the deny does NOT depend on the rm floor being enabled.
+        verdict = is_denied(line)
+        assert verdict is not None
+        assert "git-publish-push-protected-branch-name" in verdict, verdict
+        # A non-overflowing push to the same branch denies identically (sanity).
+        small = f"printf '%s\\n' main | xargs -IX git {push} {force} origin X"
+        assert is_denied(small) is not None
+
+    def test_rm_rf_xargs_reconstructed_operand_keeps_a_literal_separator(self) -> None:
+        """GPT 6.1 (UPHOLD-FENCED): the invoked command's operands are DEQUOTED
+        before classification, so a quoted literal operand (``'a;b'``) became the
+        bare ``a;b`` and the floor read its ``;`` as a command boundary, hiding a
+        later home/root operand. ``echo ~ | xargs rm -fr 'a;b'`` runs ``rm -fr a;b``
+        on home, so it is DENIED; the replace form (``-I{} ... 'a;b' {}``) identically
+        so. A benign quoted-separator operand with NO home/root target stays
+        ALLOWED."""
+        from kiro_crew.security import is_denied
+
+        rm = "r" + "m"
+        for cmd in (
+            f"echo ~ | xargs {rm} -fr 'a;b'",
+            f'echo ~ | xargs {rm} -fr "a|b"',
+            f"echo ~ | xargs -I{{}} {rm} -fr 'a;b' {{}}",
+            f"echo / | xargs {rm} -fr 'a&b'",
+        ):
+            assert is_denied(cmd) is not None, cmd
+        # A quoted-separator operand whose only target is a descendant stays allowed.
+        assert is_denied(f"echo ./x | xargs {rm} -fr 'a;b'") is None
+
+    def test_rm_rf_xargs_printf_output_cannot_stall_the_gate(self) -> None:
+        """GPT 6.1 F2 (UPHOLD-FENCED): a ``printf`` producer reuses its format once
+        per argument, so a long format x many args projects to tens of MB that the
+        synchronous gate tokenised, exceeding the gateway watchdog. The projected
+        output is bounded and an overflow resolves to the fail-closed deny sentinel
+        WITHOUT building the expansion. Asserted on BOUNDED WORK (the producer
+        resolves to the short sentinel, not the 24 MB output), not wall-clock time
+        (deterministic-test rule). Small printf producers still classify."""
+        from kiro_crew.security import is_denied
+        from kiro_crew.security.shell_normalizer import (
+            _PRODUCER_OVERFLOW_DENY,
+            _static_producer_output,
+        )
+
+        # The producer resolves to the bounded deny sentinel, never the 24 MB output.
+        fmt = "a" * 8000 + "%s\\n"
+        producer = ["printf", f"'{fmt}'"] + ["a"] * 3000
+        out = _static_producer_output(producer)
+        assert out == _PRODUCER_OVERFLOW_DENY
+        assert len(out) < 16  # bounded, not tens of MB
+        # End to end: the oversized printf | xargs rm is denied (fail closed).
+        rm = "r" + "m"
+        cmd = f"printf '{fmt}' " + " ".join(["a"] * 3000) + f" | xargs {rm} -fr"
+        assert is_denied(cmd) is not None
+        # Small printf producers still classify correctly (base parity).
+        assert is_denied(f"printf '/%s' '' | xargs {rm} -fr") is not None
+        assert is_denied(f"printf '%s\\n' ./build | xargs {rm} -fr") is None
 
     def test_rm_rf_home_parameter_suffix_removal_is_denied(self) -> None:
         """GPT security-class (UPHOLD-FENCED): the shell resolves the
