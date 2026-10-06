@@ -2482,7 +2482,11 @@ async def api_cron_history_all(request: web.Request) -> web.Response:
         rows = [row for row in rows if row.get("job_id") in owned]
         total = len(rows)
         runs = rows[offset : offset + limit]
-        _audit_app_cron(app, "crons.history_all", "allowed", f"rows={total}")
+        # No SEL row for this allowed read: the read-path decision ``api_crons``
+        # records applies here too -- a filtered list read has no refusal branch
+        # (an app with no owned runs just gets an empty list), so an "allowed"
+        # row has no deny counterpart to pair with and names no consumer. The
+        # per-job gates audit because they REFUSE; this route does not.
     else:
         runs, total = await state.crons.get_history().get_all_history(
             job_id=job_id, limit=limit, offset=offset
@@ -3259,6 +3263,21 @@ async def api_crons(request: web.Request) -> web.Response:
     # loop with the store read/hash. The hot per-connection status push and the
     # other mutation handlers keep using the cache-only list_jobs().
     jobs = await state.crons.list_jobs_async(include_disabled=True)
+    # An app token reaches this list route, but like every per-job cron route
+    # it sees only the jobs it created, judged by the same host-written
+    # ``created_by`` ``app:<name>`` stamp ``_refuse_foreign_app_job`` reads.
+    # Without this the dashboard's polling endpoint would hand an app every
+    # job's ``message``, ``last_result``, ``last_error``, ``command`` and
+    # ``script`` -- exactly the run data the per-job gates on this PR protect --
+    # leaving the trust boundary open on the one route that returns it in bulk.
+    # Filtered here so every field below is already scoped; no per-decision SEL
+    # row, for the same reason the owner-view classification below is not
+    # audited: this endpoint polls every few seconds and a per-poll event would
+    # flood the log without adding signal. The owner, dashboard and
+    # internal-secret callers (``app == ""``) are unaffected.
+    app = _app_caller(request)
+    if app:
+        jobs = [j for j in jobs if app_owner_name(j.created_by) == app]
     now = time.time()
     tz_name, _ = get_local_tz()
     # Secret-grant metadata is owner-view only (see the field comment below).
