@@ -555,6 +555,85 @@ def test_mcp_core_names_the_co_tenant_from_its_own_token(shared_topo, monkeypatc
     assert mcp_core._resolve_session_key() == CO_TENANT_KEY
 
 
+# -- the strict resolver's env-var source on a shared pid -------------------
+
+
+def _wire_strict_env(monkeypatch, cfg_dir: Path, env_key: str, *, tenants) -> None:
+    """Run as an MCP child of a runtime whose SIGNED mapping names *tenants*.
+
+    The guard reads the MAC-verified mapping, so the model's unsigned ``.txt``
+    is not enough: this publishes through ``publish_session_pid`` itself, which
+    writes the sidecar too. ``_wire_shared`` deliberately clears both env vars to
+    exercise the walk, so the env-var source needs them put back -- *env_key* is
+    the value the runtime was stamped with, and ``KIROCREW_HOST_PID`` names the
+    runtime whose mapping says how many sessions it serves. ``tenants=None``
+    publishes nothing at all.
+    """
+    from kiro_crew import session_pid_sig
+
+    topo = ProcessTopology(cfg_dir)
+    topo.add(GATEWAY, 1)
+    topo.add(SESSION_HOST, GATEWAY)
+    topo.add(KIRO_CLI, SESSION_HOST)
+    topo.add(MCP_SERVER, KIRO_CLI)
+    _wire_shared(monkeypatch, topo)
+    monkeypatch.setattr(session_pid_sig, "config_dir", lambda: topo.cfg_dir)
+    monkeypatch.setattr("kiro_crew.config.paths.config_dir", lambda: topo.cfg_dir)
+    monkeypatch.setattr(session_pid_sig.platform_compat, "get_process_start_id", lambda pid: None)
+    if tenants is not None:
+        session_pid_sig.publish_session_pid(KIRO_CLI, SESSION_KEY, co_tenants=tenants)
+    monkeypatch.setenv("KIROCREW_SESSION_KEY", env_key)
+    monkeypatch.setenv("KIROCREW_HOST_PID", str(KIRO_CLI))
+
+
+def test_strict_refuses_the_env_var_on_a_shared_pid(tmp_path, monkeypatch) -> None:
+    """THE property. The env var is stamped once per runtime and inherited by
+    every MCP child of it, so on a runtime serving two sessions it names one of
+    them and cannot say which is calling. Answering hands this caller the
+    co-tenant's identity, and a state-mutating tool then writes that session's
+    state -- which is a work_report landing on another worker's item."""
+    from kiro_crew import mcp_core
+
+    _wire_strict_env(
+        monkeypatch, tmp_path, SESSION_KEY, tenants=[SESSION_KEY, CO_TENANT_KEY]
+    )
+    assert mcp_core._resolve_session_key_strict() == ""
+
+
+def test_strict_refuses_even_when_the_env_var_names_the_other_tenant(
+    tmp_path, monkeypatch
+) -> None:
+    """The value is the same for every child of the runtime, so which tenant it
+    happens to name changes nothing about who is calling."""
+    from kiro_crew import mcp_core
+
+    _wire_strict_env(
+        monkeypatch, tmp_path, CO_TENANT_KEY, tenants=[SESSION_KEY, CO_TENANT_KEY]
+    )
+    assert mcp_core._resolve_session_key_strict() == ""
+
+
+def test_strict_keeps_the_env_var_on_a_sole_tenant_pid(tmp_path, monkeypatch) -> None:
+    """The control, and the compatibility guarantee: one session on the pid means
+    the env var names it, and that is the topology the var was written for."""
+    from kiro_crew import mcp_core
+
+    _wire_strict_env(monkeypatch, tmp_path, SESSION_KEY, tenants=[SESSION_KEY])
+    assert mcp_core._resolve_session_key_strict() == SESSION_KEY
+
+
+def test_strict_keeps_the_env_var_when_no_mapping_is_published(
+    tmp_path, monkeypatch
+) -> None:
+    """Absence is not evidence of sharing. A deployment that publishes no mapping
+    keeps the env var exactly as authoritative as it was, so the guard costs an
+    unshared install nothing."""
+    from kiro_crew import mcp_core
+
+    _wire_strict_env(monkeypatch, tmp_path, SESSION_KEY, tenants=None)
+    assert mcp_core._resolve_session_key_strict() == SESSION_KEY
+
+
 # -- walk copy 3: the policy walk in mcp_shared -----------------------------
 
 

@@ -675,7 +675,12 @@ def _resolve_session_key_strict() -> str:
        broker stub, no config key) — which is why it is accepted ABOVE the env
        var: where the two disagree, a warm-pool rekey has made the env stale and
        the file is current.
-    2. The gateway-injected ``KIROCREW_SESSION_KEY`` env var.
+    2. The gateway-injected ``KIROCREW_SESSION_KEY`` env var, EXCEPT on a host
+       pid the mapping records as hosting several sessions. The var is stamped
+       once per runtime and inherited by every MCP child of it, so on a shared
+       runtime it names one tenant and cannot say which one is calling — the same
+       ground on which source 3 refuses such a pid
+       (:func:`_host_pid_hosts_several_sessions`).
     3. The direct ``KIROCREW_HOST_PID`` -> ``session_pid_<pid>.txt``
        lookup, but ONLY when the HMAC sidecar written by the gateway
        verifies (:func:`kiro_crew.session_pid_sig.verify_session_pid`).
@@ -725,10 +730,17 @@ def _resolve_session_key_strict() -> str:
     if from_token:
         return from_token
     sk = os.environ.get("KIROCREW_SESSION_KEY", "")
-    if sk:
+    host_pid = os.environ.get("KIROCREW_HOST_PID", "")
+    # The env var is PROCESS-keyed: it is stamped once, with the session the
+    # runtime was spawned for, and every MCP child of that runtime inherits the
+    # same value. One runtime hosts many ACP sessions, so on a runtime a signed
+    # mapping records as multi-tenant the var names ONE tenant and cannot say
+    # which one is calling — the same reason source 3 below refuses such a pid.
+    # Answering would attribute this caller to a co-tenant and a state-mutating
+    # tool would write another session's state.
+    if sk and not _host_pid_hosts_several_sessions(host_pid):
         return sk
     try:
-        host_pid = os.environ.get("KIROCREW_HOST_PID", "")
         if host_pid.isdigit():
             from kiro_crew.session_pid_sig import verify_session_pid
 
@@ -736,6 +748,33 @@ def _resolve_session_key_strict() -> str:
     except Exception:
         pass
     return ""
+
+
+def _host_pid_hosts_several_sessions(host_pid: str) -> bool:
+    """True only when the mapping POSITIVELY records several sessions on *host_pid*.
+
+    The UNSIGNED read, matching ``mcp_caller``'s own co-tenancy refusal, because
+    this answer only ever DENIES an identity. A same-uid agent that forges a
+    tenant section costs its target a refusal that names the reason — while the
+    MAC-verified read would make this guard silently inert wherever the SEL trust
+    root is missing, which is exactly where identity is already weakest. Source 3
+    below still demands the MAC, because source 3 GRANTS a key.
+
+    Absence is NOT evidence: a missing or malformed mapping answers False and
+    leaves the env var exactly as authoritative as it was, so the single-session
+    topology the var was written for is unaffected and only a pid recorded as
+    shared loses it. Never raises -- an identity source that can raise would turn
+    a resolvable session into a crashed tool call.
+    """
+    if not host_pid.isdigit():
+        return False
+    try:
+        from kiro_crew.session_pid_sig import REFUSAL_CO_TENANT, read_session_pid_mapping
+
+        mapping = read_session_pid_mapping(host_pid)
+    except Exception:
+        return False
+    return mapping.refusal == REFUSAL_CO_TENANT or mapping.tenant_count >= 2
 
 
 def strict_identity_diagnosis(server: str = "kirocrew-core") -> str:
