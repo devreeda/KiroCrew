@@ -360,11 +360,17 @@ def test_the_measured_checks_are_the_checks_the_tool_gate_applies():
     }, f"the tool gate's per-target checks changed: {sorted(applied)}"
     # The path tier reads a PATH and the gate exempts shell text from it; this
     # differential classifies shell rows only, so its composite is the other three.
+    # The gate's second exemption, a title equal to the call's own verified MCP
+    # identity, needs an MCP server name, which no shell row carries, so it does
+    # not move the composite.
     assert re.search(
         r"exempt_command = command if \(is_shell and command and not mcp_server_name\) else None"
+        r"(?:\s*#[^\n]*\n)*"
+        r"\s*exempt_identity = \(\s*normalized\s*if title_is_trusted_mcp_identity\([^)]*\)\s*else None\s*\)"
         r"\s*\n\s*for target in security_targets:\s*\n"
         r"(?:\s*#[^\n]*\n)*"
-        r"\s*reason = sensitive_path_refusal\(target\) if target != exempt_command else None",
+        r"\s*path_exempt = target in \(exempt_command, exempt_identity\)"
+        r"\s*\n\s*reason = None if path_exempt else sensitive_path_refusal\(target\)",
         source,
     ), "the gate's shell-command exemption of the path tier moved; re-derive the composite"
     shell_applied = applied - {"sensitive_path_refusal"}
