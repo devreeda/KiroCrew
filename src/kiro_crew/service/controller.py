@@ -305,8 +305,8 @@ def stop_service() -> bool:
         return False
     if plat == Platform.LAUNCHD:
         if macos.is_active():
-            macos.stop()
-            return True
+            # A refused bootout must not read as a stop.
+            return macos.stop()
         return False
     return False
 
