@@ -49,6 +49,7 @@ scan, so it costs the same on a crew log with ten lines and one with a million.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -108,6 +109,7 @@ from kiro_crew.jsonl_util import (
     bounded_raw_records,
     strict_raw_records,
 )
+from kiro_crew.on_loop_db import OnLoopStoreError, strict_enabled
 from kiro_crew.platform_compat import file_lock, restrict_dir_to_owner
 from kiro_crew.session_ledger import _store_name, is_link, resolved_within, unlink_lock_in_hold
 
@@ -2132,12 +2134,40 @@ def _open_lock(path: Path) -> Iterator[None]:
     That would make the second contender crash before it reached the lock,
     defeating the serialization the lock exists for. ``file_lock`` itself fails
     closed, which is why nothing here has a lock-less fallback.
+
+    On the event-loop thread ``file_lock`` takes one attempt, so an on-loop
+    caller fails only when the writer or the eager folder happens to hold the
+    lock. With :data:`STRICT_ON_LOOP_ENV` set, every on-loop take raises
+    :class:`~kiro_crew.on_loop_db.OnLoopStoreError`, held or not, so the change
+    that adds such a call fails every time instead of on a slow shard. Unset --
+    the production default -- nothing changes.
     """
+    if strict_enabled(strict_env=STRICT_ON_LOOP_ENV, include_dev_mode=False) and _running_on_loop():
+        raise OnLoopStoreError(
+            f"crew-log unit lock {path} taken on the event-loop thread; "
+            f"call it through asyncio.to_thread ({STRICT_ON_LOOP_ENV} is set)"
+        )
     _mkdir_private(path.parent)
     path.touch(exist_ok=True)
     with open(path, "r+") as handle:
         with file_lock(handle.fileno(), exclusive=True):
             yield
+
+
+#: This surface's own on-loop strict switch, kept apart from the shared
+#: ``KIROCREW_STRICT_ON_LOOP_PERSIST`` for the reason ``on_loop_db`` gives: one
+#: switch per surface, so arming one cannot red another. Dev mode does not arm
+#: it, because in-process callers of this store are not yet all proven off-loop.
+STRICT_ON_LOOP_ENV = "KIROCREW_STRICT_ON_LOOP_CREW_LOG"
+
+
+def _running_on_loop() -> bool:
+    """True on a thread that is running an asyncio event loop."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return False
+    return True
 
 
 # --------------------------------------------------------------------------- #

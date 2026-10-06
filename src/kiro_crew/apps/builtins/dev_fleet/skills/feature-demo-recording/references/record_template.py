@@ -111,7 +111,7 @@ SEED = {
 
 CURSOR_JS = r"""
 (()=>{const c=document.createElement('div');c.id='__cur';
-c.style.cssText='position:fixed;z-index:2147483647;width:26px;height:26px;margin:-13px 0 0 -13px;border-radius:50%;background:rgba(0,212,146,.9);box-shadow:0 0 18px rgba(0,212,146,.65);pointer-events:none;left:-99px;top:-99px;transition:left .05s linear,top .05s linear;';
+c.style.cssText='position:fixed;z-index:2147483647;width:26px;height:26px;margin:-13px 0 0 -13px;border-radius:50%;background:rgba(142,72,255,.9);box-shadow:0 0 18px rgba(142,72,255,.65);pointer-events:none;left:-99px;top:-99px;transition:left .05s linear,top .05s linear;';
 const add=()=>{if(document.body&&!document.getElementById('__cur'))document.body.appendChild(c);};
 if(document.readyState!=='loading')add();else document.addEventListener('DOMContentLoaded',add);
 window.__moveCur=(x,y)=>{c.style.left=x+'px';c.style.top=y+'px';};})();

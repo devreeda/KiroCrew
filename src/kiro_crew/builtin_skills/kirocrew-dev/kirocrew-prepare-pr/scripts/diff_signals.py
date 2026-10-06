@@ -31,12 +31,18 @@ With ``--check-body`` it also reads the PR body the skill writes --
   the checkout, so a branch cannot weaken its own check, and run on the body.
   A failure prints that script's message; that is exit 22. A base without the
   script (another repo) skips it silently.
+* **Pattern harvest (hard).** PR Hygiene requires a ``## Pattern harvest``
+  section carrying a ``Rule candidate:`` or ``Not generalizable:`` line on every
+  ``fix``/``revert`` PR, keyed on the PR title. The skill opens one commit per PR
+  with its subject as the title, so HEAD's subject stands in for the title here.
+  Missing is exit 23.
 
 All checks run and print before any exit; when several breach, the lowest code wins.
 
 Usage:  python3 diff_signals.py [base-branch] [--check-body]
 Exit:   0 printed / body passes | 20 unaccounted area(s) | 21 What changed too long |
-        22 template sections missing | 2 environment error
+        22 template sections missing | 23 Pattern harvest missing on a fix/revert |
+        2 environment error
 """
 
 import argparse
@@ -287,6 +293,27 @@ def template_check(body, base):
     return 22
 
 
+# The same three tests as code-review.yml's "Require Pattern harvest section on
+# fix PRs" step, which greps the title and the body line by line.
+FIX_TITLE = re.compile(r"^(fix|revert)([(!:]|$)", re.IGNORECASE)
+HARVEST_HEADING = re.compile(r"^##+ *Pattern harvest", re.IGNORECASE | re.MULTILINE)
+HARVEST_LINE = re.compile(r"^ *(Rule candidate|Not generalizable) *:", re.IGNORECASE | re.MULTILINE)
+
+
+def harvest_check(body, title):
+    """Return 23 when a fix/revert ``title`` has no usable Pattern harvest, else 0."""
+    if not FIX_TITLE.search(title):
+        return 0
+    if not HARVEST_HEADING.search(body):
+        print("PATTERN HARVEST: a fix/revert PR needs a '## Pattern harvest' section")
+        return 23
+    if not HARVEST_LINE.search(body):
+        print("PATTERN HARVEST: the section needs a 'Rule candidate:' or 'Not generalizable:' line")
+        return 23
+    print("Pattern harvest section present")
+    return 0
+
+
 def parse_args(argv):
     ap = argparse.ArgumentParser(add_help=False)
     ap.add_argument("base", nargs="?", default="")
@@ -352,7 +379,9 @@ def main(argv):
     if body is not None:
         rc = check_body(body, ns)
         tpl = template_check(body, base)
-        return rc or tpl
+        title = run(["git", "log", "-1", "--format=%s"])[1].strip()
+        harvest = harvest_check(body, title)
+        return rc or tpl or harvest
     return 0
 
 

@@ -258,18 +258,15 @@ PROJECTIONS: dict[str, McpProjection] = {
     ACP_BACKEND_OPENCODE: McpProjection(
         kind=ProjectionKind.MIRROR,
         reason="opencode.py -- the wire face alone, and the entry that shows why a "
-        "no-channel claim has to be measured rather than inferred. It was declared "
-        "no-channel on the reading that opencode's initialize advertises "
-        "mcpCapabilities of http and sse and NO stdio, so the session/new array "
-        "could not carry Crew's stdio servers. That inference was wrong: ACP's "
-        "McpCapabilities schema has exactly two boolean fields, http and sse, and "
-        "no stdio field at all, so a conforming agent cannot advertise stdio and "
-        "that answer is what FULL support looks like. Driven against opencode "
-        "1.18.30, the element acp.session_mcp.acp_server_element already emits is "
-        "accepted, the child is spawned, its tools are listed and the element's env "
-        "reaches it. The same entry also contradicted itself -- its last sentence "
-        "said the array carries the shared gateway's broker stubs, which are stdio "
-        "elements too -- and both halves could not be true. Crew writes no opencode "
+        "no-channel claim has to be measured rather than inferred. opencode's "
+        "initialize advertises mcpCapabilities of http and sse and no stdio, and "
+        "that is not evidence of a missing channel: ACP's McpCapabilities schema "
+        "has exactly two boolean fields, http and sse, and no stdio field at all, "
+        "so a conforming agent cannot advertise stdio and that answer is what FULL "
+        "support looks like. Driven against opencode 1.18.30, the element "
+        "acp.session_mcp.acp_server_element already emits is accepted, the child "
+        "is spawned, its tools are listed and the element's env reaches it. Crew "
+        "writes no opencode "
         "MCP config: OPENCODE_CONFIG_CONTENT (which Crew does seed, for the "
         "permission routing alone) MERGES rather than replaces, and declaring one "
         "server in both that block and the array double-mounts it, so the array is "
@@ -315,7 +312,7 @@ PROJECTIONS: dict[str, McpProjection] = {
         reason="goose.py -- the second single-binary spec harness to carry a session "
         "array, and the entry that shows what a MEASURED channel claim costs versus an "
         "inferred one. Its initialize advertises mcpCapabilities of http and sse with no "
-        "stdio flag, the same reading that once had opencode declared no-channel, and it "
+        "stdio flag, the same shape opencode advertises, and it "
         "is the same non-evidence: ACP's McpCapabilities schema has exactly two boolean "
         "fields and no stdio field, so a conforming agent cannot advertise stdio. Rather "
         "than infer either way this was driven end to end against goose 1.50.1: the "
@@ -338,8 +335,7 @@ PROJECTIONS: dict[str, McpProjection] = {
         # is the projection side: no per-tool form mounts a narrowed server with its denied
         # tools filtered out of the array, the way codex's does. Withholding the server
         # whole, Crew's own control plane included, is the direction that cannot leave a
-        # switched-off tool reachable while that is true. Follow-up: a per-tool projection
-        # for this harness, after which the verdict is TRANSLATED per tool.
+        # switched-off tool reachable while that is true.
         per_tool_deny=PerToolDeny.WHOLE_SERVER,
     ),
     ACP_BACKEND_DEEPSEEK: McpProjection(

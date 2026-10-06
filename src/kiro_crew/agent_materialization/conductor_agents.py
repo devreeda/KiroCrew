@@ -716,9 +716,9 @@ def _install_conductor_agent(*, clean: bool = False) -> bool:
     a side effect, and the decision has now been taken — the flow ran end to end
     (7 items across 3 rounds, each acceptance settled by the evaluator rather
     than by a transcript read), so it is what this spec emits.
-    ``kirocrew-ledger-conductor`` stays for one release as a deprecated alias
-    emitting this same spec under its old name, because an in-flight session
-    names its agent by string and a deleted name is a broken session.
+    ``kirocrew-ledger-conductor`` stays as a deprecated alias emitting this same
+    spec under its old name, because an in-flight session names its agent by
+    string and a deleted name is a broken session.
 
     Every property ``_conductor_spec`` argues for holds here, and the swap did
     not relax one of them: no file-writing tool at all, ``@kirocrew-core`` /
@@ -775,21 +775,23 @@ DEPRECATED_AGENT_SPECS: dict[str, str] = {
 def _install_ledger_conductor_agent(*, clean: bool = False) -> bool:
     """Install the deprecated ``kirocrew-ledger-conductor`` alias spec.
 
-    The ledger flow is ``kirocrew-conductor`` now, and this name is kept for one
-    release because it is a public, user-facing string: it is what a running
-    session records as its agent, what a seed prompt names for a second-level
-    conductor, and what an operator typed into a cron. Deleting it in the same
-    release as the swap would break those in place, so the name still resolves
-    and emits the SAME spec — see ``_conductor_spec``, which both installers
-    call so the two cannot drift. Its file is its own, so the user entries it
-    carries forward and the record it leaves are keyed by the alias name.
+    The ledger flow is ``kirocrew-conductor`` now, and this name is kept because
+    it is a public, user-facing string: it is what a running session records as
+    its agent, what a seed prompt names for a second-level conductor, and what an
+    operator typed into a cron. Deleting it in the same release as the swap would
+    break those in place, so the name still resolves and emits the SAME spec —
+    see ``_conductor_spec``, which both installers call so the two cannot drift.
+    Its file is its own, so the user entries it carries forward and the record it
+    leaves are keyed by the alias name.
 
-    Removed next release; nothing new should name it.
+    Deprecated; removed once ``kirocrew doctor`` reports no config naming it.
+    Nothing new should name it.
     """
     config = _conductor_spec(
         name="kirocrew-ledger-conductor",
         description=(
-            "Deprecated alias of kirocrew-conductor (removed next release). "
+            "Deprecated alias of kirocrew-conductor (removed once doctor reports "
+            "no config naming it). "
             "Owns a long-horizon goal and tracks it in the work ledger: "
             "decomposes it into items, dispatches one session per item, reads "
             "their reported status as data rather than as a transcript, "

@@ -58,6 +58,8 @@ _ON_LOOP_ON_PURPOSE = frozenset(
     {
         # The negative control proving the held-lock probe is real contention.
         ("test_issue_radar_crew_runtime.py", "on_the_loop"),
+        # The strict switch's own test: an on-loop open must raise under it.
+        ("test_crew_log_on_loop_strict.py", "on_the_loop"),
     }
 )
 

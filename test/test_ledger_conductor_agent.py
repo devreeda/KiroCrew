@@ -114,7 +114,8 @@ def test_the_alias_spec_is_identical_apart_from_name_and_description(tmp_path, m
     assert live["name"] == "kirocrew-conductor"
     assert alias["name"] == "kirocrew-ledger-conductor"
     assert alias["description"].startswith(
-        "Deprecated alias of kirocrew-conductor (removed next release)."
+        "Deprecated alias of kirocrew-conductor (removed once doctor reports "
+        "no config naming it)."
     )
     assert alias["description"] != live["description"]
     # The charter sentence survives the prefix, so the roster entry still says

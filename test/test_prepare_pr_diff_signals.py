@@ -494,3 +494,41 @@ def test_end_to_end_base_without_the_template_check_skips_it(repo: Path) -> None
     assert rc == 0
     assert "TEMPLATE" not in out
     assert "PR template" not in out
+
+
+# ---------------------------------------------------------------- Pattern harvest
+
+
+@pytest.mark.parametrize(
+    ("title", "body", "rc"),
+    [
+        ("fix(chat): send once", "## What changed\n\nx\n", 23),
+        ("revert: undo it", "## What changed\n\nx\n", 23),
+        ("fix: x", "## Pattern harvest\n\nnothing here\n", 23),
+        ("fix: x", "## Pattern harvest\nRule candidate: semgrep\nPattern: p\n", 0),
+        ("Fix!: x", "### pattern harvest\nNot generalizable: one typo\n", 0),
+        ("feat: add it", "## What changed\n\nx\n", 0),
+        ("fixup: not a fix type", "## What changed\n\nx\n", 0),
+    ],
+)
+def test_harvest_check_mirrors_pr_hygiene(title: str, body: str, rc: int, capsys) -> None:
+    assert ds.harvest_check(body, title) == rc
+
+
+def test_harvest_rule_is_the_pr_hygiene_rule() -> None:
+    # The local check copies CI's regexes; a drift on either side reopens the gap.
+    workflow = (ROOT / ".github" / "workflows" / "code-review.yml").read_text(encoding="utf-8")
+    assert "grep -qiE '^(fix|revert)([(!:]|$)'" in workflow
+    assert "grep -qiE '^##+ *Pattern harvest'" in workflow
+    assert "grep -qiE '^ *(Rule candidate|Not generalizable) *:'" in workflow
+    assert ds.FIX_TITLE.pattern == r"^(fix|revert)([(!:]|$)"
+    assert ds.HARVEST_HEADING.pattern == r"^##+ *Pattern harvest"
+    assert ds.HARVEST_LINE.pattern == r"^ *(Rule candidate|Not generalizable) *:"
+
+
+def test_end_to_end_fix_commit_without_harvest_exits_twenty_three(repo: Path) -> None:
+    _git(repo, "commit", "-q", "--amend", "-m", "fix(chat): send once")
+    _body(repo).write_text("## What changed\n\nchat/send.py sends once. security.py allows it.\n")
+    rc, out = _run(repo, "--check-body")
+    assert rc == 23, out
+    assert "PATTERN HARVEST" in out

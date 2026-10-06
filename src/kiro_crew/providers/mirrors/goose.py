@@ -109,8 +109,7 @@ class GooseMirror(AgentConfigMirror):
                 "PROJECTION that mounts a narrowed server while filtering its denied "
                 "tools out of the array. Until that exists, withholding the whole server "
                 "is the choice that cannot leave a switched-off tool reachable, and it is "
-                "the conservative direction of the two. Follow-up: give this harness a "
-                "per-tool projection and the verdict becomes TRANSLATED per tool",
+                "the conservative direction of the two",
             ),
             Concern.MODEL: Ruling(
                 _D.DELIVERED,
