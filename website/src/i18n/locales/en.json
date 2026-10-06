@@ -7643,7 +7643,12 @@
       "schedule_new": "New schedule",
       "schedule_load_failed": "Could not load this crewmate’s schedules.",
       "schedule_open_all": "All schedules",
-      "panel_toggle": "Dashboard & files"
+      "panel_toggle": "Dashboard & files",
+      "dashboard_kept_last_good": "A newer version of this dashboard did not load, so this is the last one that did.",
+      "dashboard_unavailable": "This dashboard could not be loaded. Try again, or reload the page.",
+      "dashboard_render_error": "This dashboard could not be drawn. Try again, or reload the page.",
+      "dashboard_frame_title": "Dashboard for {{crew}}",
+      "dashboard_rendering": "Drawing the dashboard…"
     },
     "migrationPage": {
       "app_migration": "App Migration",

@@ -17319,7 +17319,12 @@
       "schedule_new": "नया शेड्यूल",
       "schedule_load_failed": "इस क्रूमेट के शेड्यूल लोड नहीं हो सके।",
       "schedule_open_all": "सभी शेड्यूल",
-      "panel_toggle": "डैशबोर्ड और फ़ाइलें"
+      "panel_toggle": "डैशबोर्ड और फ़ाइलें",
+      "dashboard_kept_last_good": "इस डैशबोर्ड का नया संस्करण लोड नहीं हुआ, इसलिए यह अंतिम लोड हुआ संस्करण है।",
+      "dashboard_unavailable": "यह डैशबोर्ड लोड नहीं हो सका। दोबारा कोशिश करो या पेज फिर से लोड करो।",
+      "dashboard_render_error": "यह डैशबोर्ड बनाया नहीं जा सका। दोबारा कोशिश करो या पेज फिर से लोड करो।",
+      "dashboard_frame_title": "{{crew}} का डैशबोर्ड",
+      "dashboard_rendering": "डैशबोर्ड बनाया जा रहा है…"
     },
     "tasksCapacityCard": {
       "title": "कार्य और क्षमता",
