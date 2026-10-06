@@ -2166,3 +2166,82 @@ class TestNestedPayloadExtractionSpansTheProvenBoundary:
         )
         assert security._GIT_PUBLISH_UNGATED in floor("git push origin feature > >(echo main")
         assert security._git_push_args("bash -c '(cd /tmp && git push origin my-feature)'") is None
+
+
+class TestSingleWordLexer:
+    """The bash-faithful word lexer the argument scan consumes.
+
+    Four consecutive review rounds on the git-publish scan each surfaced one
+    shell construct a per-token RE-DERIVATION of shell meaning mis-read. The
+    consolidation reads every word ONCE, with :func:`_read_lexed_word`, into a
+    ``_LexedWord`` the arity layer consumes — a single quote walk produces every
+    field, so the operator split, the fragment state and the redirection arity
+    cannot drift from one another. These tests pin that single reading: the
+    verdict a word gets, its agreement with the public per-token helpers, and
+    that the floor's observable behaviour for the shapes it backs is unchanged.
+    """
+
+    def test_the_lexed_word_keeps_the_raw_spelling(self):
+        # The arity scan classifies by the word's own shape (operator glue and
+        # quoting intact), so the lexer preserves raw and never pre-cuts it.
+        for raw in ("origin", ">log", "'feature x'", "main)", "@(main)"):
+            assert security._read_lexed_word(raw).raw == raw
+
+    def test_each_word_carries_its_own_shell_reading(self):
+        # One pass yields every per-word signal the scan otherwise re-derives.
+        read = security._read_lexed_word
+        # A plain word: no operator, closed, not a redirection, not a comment.
+        plain = read("origin")
+        assert plain.operator_pieces is None
+        assert not plain.open_state
+        assert not plain.is_redirection
+        assert not plain.comment
+        # A redirection word: flagged, and its target is attached (not next).
+        redir = read(">log")
+        assert redir.is_redirection
+        assert not redir.consumes_next
+        # A word-initial '#' starts a comment.
+        assert read("#x").comment
+        # An unterminated quote is a FRAGMENT: open_state is set.
+        assert read("'a").open_state
+
+    def test_the_per_token_helpers_agree_with_the_single_reading(self):
+        # The public per-token helpers must agree with the lexer word for word --
+        # there is ONE reading, not two that can drift (the shape per-construct
+        # reviews keep reopening).
+        for token in (
+            "origin",
+            ">log",
+            "2>&1",
+            "origin>/dev/null",
+            "</dev/null",
+            "#comment",
+            "'unterminated",
+            "ma\\",
+            ">",
+        ):
+            word = security._read_lexed_word(token)
+            pieces, open_state = security._push_token_shell_read(token)
+            assert word.operator_pieces == pieces
+            assert word.open_state == open_state
+            assert (word.is_redirection, word.consumes_next) == security._push_token_redirection(
+                token
+            )
+
+    def test_a_separated_redirection_target_sets_consumes_next(self):
+        # The arity the loop reads off the lexed word: '>' alone takes the NEXT
+        # word as its target; '>log' attaches it.
+        attached = security._read_lexed_word(">log")
+        separated = security._read_lexed_word(">")
+        assert attached.is_redirection and not attached.consumes_next
+        assert separated.is_redirection and separated.consumes_next
+
+    def test_the_floor_behaviour_the_lexer_backs_is_unchanged(self):
+        # The observable tags for the shapes now read through the lexer are
+        # exactly those the metacharacter-inventory test pins.
+        floor = security._git_publish_floor_tags
+        assert floor("git push origin </dev/null") == {"git-publish-push-single-arg"}
+        assert floor("git push origin #x") == {"git-publish-push-single-arg"}
+        assert "git-publish-push-bare" in floor("git push --repo=origin -o 'a b'")
+        assert floor("git push origin main >log") == {"git-publish-push-protected-branch-name"}
+        assert not floor("git push origin feature-x 2>/dev/null")

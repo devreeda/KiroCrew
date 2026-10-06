@@ -120,6 +120,7 @@ from .shell_normalizer import (
     _push_option_matches,
     _push_token_redirection,
     _push_token_shell_read,
+    _read_lexed_word,
     _redirect_consumes_next,
     _resolve_param_defaults,
     _shell_join_continuations,
@@ -3774,7 +3775,8 @@ def _git_push_args(segment: str) -> list[str] | None:
                 args.append(raw_args[k])
                 k += 1
                 continue
-            is_redirection, consumes_next = _push_token_redirection(raw_args[k])
+            word = _read_lexed_word(raw_args[k])
+            is_redirection, consumes_next = word.is_redirection, word.consumes_next
             if not is_redirection:
                 args.append(raw_args[k])
                 k += 1
@@ -4012,12 +4014,15 @@ def _push_segment_targets_protected(arg_tokens: list[str]) -> frozenset[str]:
     positional_only = False
     non_flags: list[str] = []
     skip_next = False
-    # One shared quote/escape walk per raw token yields both shell signals:
-    # operator PIECES (unquoted < > & split the word) and OPEN STATE (an
-    # unterminated quote or trailing escape means the shell fused a
-    # whitespace-spanning word this whitespace tokenizer split apart). Either
-    # signal means no per-token reading of the split can be trusted.
-    shell_reads = [_push_token_shell_read(t) for t in arg_tokens]
+    # ONE bash-faithful lexer pass reads every argument word at once
+    # (:func:`_read_lexed_word`), instead of re-deriving each word's shell
+    # meaning per-token in three places. Each word carries its operator PIECES
+    # (unquoted < > & split the word), its OPEN STATE (an unterminated quote or
+    # trailing escape means the shell fused a whitespace-spanning word this
+    # tokenizer split apart), its redirection arity, and whether it starts a
+    # comment. Either an operator split or an open state means no per-token
+    # reading of the split can be trusted.
+    lexed = [_read_lexed_word(t) for t in arg_tokens]
     # ``#`` at the start of a WORD comments out the REST of the segment, so
     # the shell never passes those tokens to git: truncate before any other
     # reading, or ``git push origin #main`` scans a phantom refspec while the
@@ -4032,14 +4037,14 @@ def _push_segment_targets_protected(arg_tokens: list[str]) -> frozenset[str]:
     # split protectively and the superset scan keeps every later positional
     # visible.
     _open_seen = False
-    for _idx, _raw in enumerate(arg_tokens):
-        if _raw.startswith("#") and not _open_seen:
+    for _idx, _word in enumerate(lexed):
+        if _word.comment and not _open_seen:
             arg_tokens = arg_tokens[:_idx]
             tokens = tokens[:_idx]
-            shell_reads = shell_reads[:_idx]
+            lexed = lexed[:_idx]
             break
-        _open_seen = _open_seen or shell_reads[_idx][1]
-    unrecognised_option = any(open_state for _pieces, open_state in shell_reads)
+        _open_seen = _open_seen or _word.open_state
+    unrecognised_option = any(word.open_state for word in lexed)
     # A segment whose CUMULATIVE quote/escape state is still open at its end
     # continues into the NEXT line: bash line continuation (backslash-newline
     # vanishes entirely) and quoted newlines splice words ACROSS the segment
@@ -4119,7 +4124,9 @@ def _push_segment_targets_protected(arg_tokens: list[str]) -> frozenset[str]:
                 break
 
     pending_redirection_target = False
-    for raw, tok, (operator_pieces, _open) in zip(arg_tokens, tokens, shell_reads):
+    for tok, word in zip(tokens, lexed):
+        raw = word.raw
+        operator_pieces = word.operator_pieces
         if tok:
             # Word-producing shell syntax makes ANY token unverifiable, no
             # matter which slot the split assigns it: ``V='ci.skip main'; git
@@ -4168,7 +4175,7 @@ def _push_segment_targets_protected(arg_tokens: list[str]) -> frozenset[str]:
             # shell removes it from argv.
             pending_redirection_target = False
             continue
-        is_redirection, consumes_next = _push_token_redirection(raw)
+        is_redirection, consumes_next = word.is_redirection, word.consumes_next
         if is_redirection:
             # Modelled with the shell's own arity so ``2>&1`` keeps a feature
             # push allowed while ``origin </dev/null`` reads as the precise
