@@ -42,7 +42,7 @@ vi.mock('../api/client', () => ({
   api: { listInstances: listInstancesMock, instanceChatSlots: instanceChatSlotsMock },
 }))
 
-import { crewBadge, crewGroupsFor, useInstanceSessions } from '../hooks/useInstanceSessions'
+import { crewBadge, crewGroupsFor, crewOf, useInstanceSessions } from '../hooks/useInstanceSessions'
 import { lastActivityEpoch } from '../pages/chat/sessionOrder'
 import type { InstanceView } from '../api/client'
 
@@ -372,14 +372,20 @@ describe('crew groups', () => {
     expect(crewBadge(undefined)).toBeNull()
   })
 
-  it('groups a listable crew, and an offline one only while a row belongs to it', () => {
+  it('groups a listable crew, and an offline one only while a peer row belongs to it', () => {
     const list = [CONNECTED, OFFLINE] as unknown as InstanceView[]
     expect(crewGroupsFor(list, []).map(g => g.id)).toEqual(['astro'])
-    const relay = { executor: 'remote', instance_id: 'chick' }
-    expect(crewGroupsFor(list, [relay])).toEqual([
+    expect(crewGroupsFor(list, [{ peer_id: 'chick' }])).toEqual([
       { id: 'astro', name: 'astro', badge: 'online', offline: false },
       { id: 'chick', name: 'chick', badge: 'offline', offline: true },
     ])
-    expect(crewGroupsFor([], [relay, { peer_id: 'astro' }])).toEqual([])
+    expect(crewGroupsFor([], [{ peer_id: 'astro' }])).toEqual([])
+  })
+
+  it('gives a chat that ran on a crew no group: it is a read-only archive under Local', () => {
+    const list = [CONNECTED, OFFLINE] as unknown as InstanceView[]
+    const archive = { executor: 'remote', instance_id: 'chick' }
+    expect(crewOf(archive)).toBeUndefined()
+    expect(crewGroupsFor(list, [archive]).map(g => g.id)).toEqual(['astro'])
   })
 })

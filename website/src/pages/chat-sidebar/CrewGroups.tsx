@@ -34,8 +34,8 @@ const badgeLabel = (badge: CrewBadge): string => (
 )
 
 /** Collapsed crew ids, persisted in localStorage so a reload keeps the user's
- *  choice. `expand` opens one group and is a no-op when it is already open. */
-export function useCollapsedCrews(): [ReadonlySet<string>, (id: string) => void, (id: string) => void] {
+ *  choice. */
+export function useCollapsedCrews(): [ReadonlySet<string>, (id: string) => void] {
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(readCollapsedCrews)
   const toggle = useCallback((id: string) => setCollapsed(prev => {
     const next = new Set(prev)
@@ -43,14 +43,7 @@ export function useCollapsedCrews(): [ReadonlySet<string>, (id: string) => void,
     safeSetItem(CREW_COLLAPSED_LS_KEY, JSON.stringify([...next]))
     return next
   }), [])
-  const expand = useCallback((id: string) => setCollapsed(prev => {
-    if (!prev.has(id)) return prev
-    const next = new Set(prev)
-    next.delete(id)
-    safeSetItem(CREW_COLLAPSED_LS_KEY, JSON.stringify([...next]))
-    return next
-  }), [])
-  return [collapsed, toggle, expand]
+  return [collapsed, toggle]
 }
 
 export function LocalGroupHeader() {

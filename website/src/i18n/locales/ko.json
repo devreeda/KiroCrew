@@ -11183,6 +11183,11 @@
         "retry": "다시 시도",
         "running_on_header": "{{name}}에서",
         "approval_elsewhere": "{{name}}의 에이전트가 이 창에서는 응답할 수 없는 승인을 기다리고 있습니다. 크루의 자체 대시보드에서 응답하세요."
+      },
+      "relayArchive": {
+        "notice": "이 채팅은 {{name}}에서 실행되었습니다. 이제 읽기 전용입니다. 계속하려면 Crew 자체 세션을 여세요.",
+        "placeholder": "읽기 전용",
+        "open": "{{name}}에서 열기"
       }
     },
     "chatPage": {
@@ -11442,7 +11447,6 @@
       "new_chat_in_folder": "폴더에 새 채팅",
       "new_chat_on_crew": "Crew에서 새 채팅",
       "creating_on_crew": "{{name}}에서 채팅을 시작하는 중…",
-      "runs_on_crew": "{{name}}에서 실행 — 연결된 Crew이며 이 컴퓨터가 아닙니다",
       "new_chat_in_name": "‘{{name}}’에 새 채팅",
       "new_chat_session": "새 채팅 세션",
       "new_folder": "새 폴더",
@@ -11574,6 +11578,7 @@
       "crew_row_offline": "지금은 연결되지 않음",
       "not_open_here_yet": "{{name}}에 있음 — 클릭하면 여기서 엽니다",
       "on_instance": "{{name}}에 있음",
+      "ran_on_instance": "{{name}}에서 실행됨",
       "opens_here_runs_on_instance": "이 세션을 여기서 엽니다 — 실행은 {{name}}에서 계속됩니다",
       "opens_on_members_page": "크루 멤버의 개인 스레드 — 멤버 페이지에서 열립니다",
       "members_page_chip": "멤버 페이지",

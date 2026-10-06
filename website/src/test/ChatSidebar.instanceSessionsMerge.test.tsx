@@ -796,9 +796,10 @@ describe('ChatSidebar – remote crew sessions in the live list', () => {
     expect(executedLocally!.querySelector('[aria-label="More options"]')).not.toBeNull()
     expect(executedLocally!.querySelector('[data-draggable="true"]')).not.toBeNull()
     expect(executedLocally!.querySelector('[data-session-row]')).toHaveAttribute('aria-current', 'true')
-    // Inside its crew group the header names the machine, so no row chip.
-    expect(executedLocally!.closest('[data-testid="crew-group-inst-a"]')).not.toBeNull()
-    expect(executedLocally!.querySelectorAll('[data-testid="remote-crew-chip"]')).toHaveLength(0)
+    // A chat that ran on a crew is a read-only archive under Local, so it
+    // wears one chip naming where it ran rather than sitting in a crew group.
+    expect(executedLocally!.closest('[data-testid="crew-group-inst-a"]')).toBeNull()
+    expect(executedLocally!.querySelectorAll('[data-testid="remote-crew-chip"]')).toHaveLength(1)
 
     // …while the peer-OWNED row keeps none of them.
     expect(ownedByPeer!.querySelector('[aria-label="More options"]')).toBeNull()

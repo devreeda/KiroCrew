@@ -11183,6 +11183,11 @@
         "retry": "再試行",
         "running_on_header": "{{name}} 上",
         "approval_elsewhere": "{{name}} のエージェントは、このウィンドウでは応答できない承認を待っています。クルー自身のダッシュボードで応答してください。"
+      },
+      "relayArchive": {
+        "notice": "このチャットは {{name}} 上で実行されました。現在は読み取り専用です。続けるには Crew 自身のセッションを開いてください。",
+        "placeholder": "読み取り専用",
+        "open": "{{name}} で開く"
       }
     },
     "chatPage": {
@@ -11442,7 +11447,6 @@
       "new_chat_in_folder": "フォルダー内に新しいチャット",
       "new_chat_on_crew": "Crew で新しいチャット",
       "creating_on_crew": "{{name}} でチャットを開始中…",
-      "runs_on_crew": "{{name}} 上で実行 — 接続済みの Crew であり、このマシンではありません",
       "new_chat_in_name": "「{{name}}」で新しいチャットを開始",
       "new_chat_session": "新しいチャットセッション",
       "new_folder": "新しいフォルダー",
@@ -11574,6 +11578,7 @@
       "crew_row_offline": "現在は未接続",
       "not_open_here_yet": "{{name}} 上 — クリックするとここで開きます",
       "on_instance": "{{name}} 上",
+      "ran_on_instance": "{{name}} 上で実行済み",
       "opens_here_runs_on_instance": "このセッションをここで開きます — 実行は {{name}} で続きます",
       "opens_on_members_page": "クルーメンバー自身のスレッド — メンバーページで開きます",
       "members_page_chip": "メンバーページ",

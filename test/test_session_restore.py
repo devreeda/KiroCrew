@@ -140,6 +140,34 @@ class TestRestoreRecentSessions:
         assert state._slots["trusted"]._trust is False
         assert state._slots["trusted"]._trust_reads is False
 
+    def test_a_crew_archive_keeps_its_binding_so_it_stays_read_only(self, tmp_path, monkeypatch):
+        """A chat that ran on a crew comes back bound, not as a local slot.
+
+        The binding is what every send / continue / regenerate guard keys on;
+        without it the archive's next send would run here.
+        """
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        _write_session(
+            tmp_path,
+            "dashboard_archive",
+            [{"role": "user", "content": "hi", "ts": "2026-03-23T10:00:00"}],
+            meta={
+                "title": "Ran on crew",
+                "executor": "remote",
+                "instance_id": "inst-1",
+                "remote_slot": "peer-slot",
+            },
+        )
+        (tmp_path / "dashboard_archive.jsonl").touch()
+        state = _make_state(tmp_path)
+        assert restore_recent_sessions(state, window_minutes=60) == 1
+        slot = state._slots["archive"]
+        assert (slot.executor, slot.instance_id, slot.remote_slot) == (
+            "remote",
+            "inst-1",
+            "peer-slot",
+        )
+
     def test_skips_old_sessions(self, tmp_path, monkeypatch):
         """Sessions older than the window are not restored."""
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)

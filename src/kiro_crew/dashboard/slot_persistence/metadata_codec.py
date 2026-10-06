@@ -1069,20 +1069,21 @@ FIELDS: tuple[Field, ...] = (
     # written only while a turn is mid-relay, so a True read back is the crash sign.
     Field(
         "executor",
-        frozenset({RESTORE}),
+        frozenset({RESTORE, RECENT}),
         attr="executor",
         line=_if_bound(lambda s: "remote"),
         merge=_if_bound(lambda s: "remote"),
         read=_read_executor,
         why=(
-            "only RESTORE rehydrates the remote binding. RECENT does not, so the "
-            "next full save of a recent-restored remote session clears it (#10826); "
-            "RESUME deliberately does not, and the session comes back local"
+            "RESTORE and RECENT rehydrate the remote binding, so a crew chat comes "
+            "back as a read-only archive on either startup path rather than as a "
+            "local slot whose next send runs here; RESUME deliberately does not, "
+            "and the session comes back local"
         ),
     ),
     Field(
         "instance_id",
-        frozenset({RESTORE}),
+        frozenset({RESTORE, RECENT}),
         attr="instance_id",
         line=_if_bound(lambda s: s.instance_id),
         merge=_if_bound(lambda s: s.instance_id),
@@ -1090,7 +1091,7 @@ FIELDS: tuple[Field, ...] = (
     ),
     Field(
         "remote_slot",
-        frozenset({RESTORE}),
+        frozenset({RESTORE, RECENT}),
         attr="remote_slot",
         line=_if_bound(lambda s: s.remote_slot),
         merge=_if_bound(lambda s: s.remote_slot),

@@ -11343,6 +11343,11 @@
         "retry": "Erneut versuchen",
         "running_on_header": "Auf {{name}}",
         "approval_elsewhere": "Der Agent auf {{name}} wartet auf eine Genehmigung, die dieses Fenster nicht beantworten kann. Beantworte sie im Dashboard der Crew."
+      },
+      "relayArchive": {
+        "notice": "Dieser Chat lief auf {{name}}. Er ist jetzt schreibgeschützt. Öffne die eigene Sitzung der Crew, um weiterzumachen.",
+        "placeholder": "Schreibgeschützt",
+        "open": "Auf {{name}} öffnen"
       }
     },
     "chatPage": {
@@ -11607,7 +11612,6 @@
       "new_chat_in_folder": "Neuer Chat im Ordner",
       "new_chat_on_crew": "Neuer Chat auf einer Crew",
       "creating_on_crew": "Chat auf {{name}} wird gestartet…",
-      "runs_on_crew": "Läuft auf {{name}} — einer verbundenen Crew, nicht auf diesem Rechner",
       "new_chat_in_name": "Neuer Chat in {{name}}",
       "new_chat_session": "Neue Chat-Sitzung",
       "new_folder": "Neuer Ordner",
@@ -11749,6 +11753,7 @@
       "crew_row_offline": "Gerade nicht verbunden",
       "not_open_here_yet": "Auf {{name}} — klicken, um sie hier zu öffnen",
       "on_instance": "Auf {{name}}",
+      "ran_on_instance": "Lief auf {{name}}",
       "opens_here_runs_on_instance": "Öffnet diese Sitzung hier — ihre Ausführung läuft weiter auf {{name}}",
       "opens_on_members_page": "Der eigene Thread eines Crewmitglieds – wird auf der Mitglieder-Seite geöffnet",
       "members_page_chip": "Mitglieder-Seite",

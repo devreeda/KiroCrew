@@ -15,7 +15,6 @@ import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createTestStore } from './helpers'
-import { requestSlotReveal } from '../store/chatSlice'
 import { ThemeProvider } from '../hooks/useTheme'
 import { PREVIEW_INSTANCE_SESSIONS } from '../utils/previewFlags'
 import en from '../i18n/locales/en.json'
@@ -85,11 +84,11 @@ const liveSlot = (key: string, title: string, extra: Partial<ChatSlot> = {}): Ch
 
 function renderSidebar({ activeSlot = 's-local', relay = false, relayFolder, relayParent, onSelectSlot }: {
   activeSlot?: string
-  /** Adds a LOCAL slot whose turns run on `inst-a` (`executor: 'remote'`). */
+  /** Adds a LOCAL chat that once ran on `inst-a` (`executor: 'remote'`): a read-only archive. */
   relay?: boolean
-  /** Files that relay slot in a folder. */
+  /** Files that archive in a folder. */
   relayFolder?: string
-  /** Makes the plain local slot the relay slot's creator, so the conductor lane exists. */
+  /** Makes the plain local slot the archive's creator, so the conductor lane exists. */
   relayParent?: boolean
   onSelectSlot?: (key: string) => void
 } = {}) {
@@ -153,31 +152,36 @@ describe('ChatSidebar – per-machine groups', () => {
     expect(screen.getAllByTestId(/^crew-group-inst-/)
       .filter(el => el.tagName === 'SECTION')).toHaveLength(1)
     expect(screen.getByTestId('crew-group-badge-inst-a')).toHaveTextContent(S.crew_status_online)
-    // A relay slot renders inside its crew's group; a plain local slot stays out.
-    expect(rowIn(group, 'RELAY slot')).not.toBeNull()
+    // A chat that ran on a crew is a read-only archive: it stays under Local,
+    // like a plain local slot, and its chip says where it ran.
+    expect(rowIn(group, 'RELAY slot')).toBeNull()
     expect(rowIn(group, 'LOCAL plain slot')).toBeNull()
     expect(screen.getByText('LOCAL plain slot')).toBeInTheDocument()
+    const archiveRow = screen.getByText('RELAY slot').closest('[data-session-row]') as HTMLElement
+    expect(within(archiveRow).getByTestId('remote-crew-chip'))
+      .toHaveTextContent(enManual.pages.chatSidebar.ran_on_instance.replace('{{name}}', 'astro'))
   })
 
-  it('keeps the selection when the crew group holding it collapses', async () => {
+  it('keeps the selection when a crew group collapses', async () => {
     localStorage.setItem(PREVIEW_INSTANCE_SESSIONS, '1')
     const onSelectSlot = vi.fn()
-    const { store } = renderSidebar({ relay: true, activeSlot: 's-relay', onSelectSlot })
+    const { store } = renderSidebar({ relay: true, onSelectSlot })
 
     const group = await screen.findByTestId('crew-group-inst-a')
-    await waitFor(() => expect(rowIn(group, 'RELAY slot')).not.toBeNull())
+    await waitFor(() => expect(rowIn(group, 'REMOTE peer row')).not.toBeNull())
     const toggle = screen.getByTestId('crew-group-toggle-inst-a')
     expect(toggle).toHaveAttribute('aria-expanded', 'true')
 
     fireEvent.click(toggle)
     expect(toggle).toHaveAttribute('aria-expanded', 'false')
-    expect(within(group).getByText('RELAY slot').closest('[aria-hidden="true"]')).not.toBeNull()
+    expect(within(group).getByText('REMOTE peer row').closest('[aria-hidden="true"]')).not.toBeNull()
     expect(onSelectSlot).not.toHaveBeenCalled()
-    expect(store.getState().chat.activeSlot).toBe('s-relay')
+    expect(store.getState().chat.activeSlot).toBe('s-local')
 
     fireEvent.click(toggle)
-    const relayRow = within(group).getByText('RELAY slot').closest('[data-session-row]')
-    expect(relayRow).toHaveAttribute('aria-current', 'true')
+    expect(toggle).toHaveAttribute('aria-expanded', 'true')
+    const localRow = screen.getByText('LOCAL plain slot').closest('[data-session-row]')
+    expect(localRow).toHaveAttribute('aria-current', 'true')
   })
 
   it('keeps a disconnected crew\'s last rows, dimmed, under an Offline badge', async () => {
@@ -218,28 +222,16 @@ describe('ChatSidebar – per-machine groups', () => {
     expect(within(group).queryByText(/On astro/)).toBeNull()
   })
 
-  it('opens a collapsed crew group to reveal a session inside it', async () => {
-    localStorage.setItem(PREVIEW_INSTANCE_SESSIONS, '1')
-    const { store } = renderSidebar({ relay: true })
-    const group = await screen.findByTestId('crew-group-inst-a')
-    await waitFor(() => expect(rowIn(group, 'RELAY slot')).not.toBeNull())
-    const toggle = screen.getByTestId('crew-group-toggle-inst-a')
-    fireEvent.click(toggle)
-    expect(toggle).toHaveAttribute('aria-expanded', 'false')
-
-    act(() => { store.dispatch(requestSlotReveal('s-relay')) })
-    await waitFor(() => expect(toggle).toHaveAttribute('aria-expanded', 'true'))
-  })
-
   it('does not say "no sessions match" when the matches sit in a crew group', async () => {
     localStorage.setItem(PREVIEW_INSTANCE_SESSIONS, '1')
     renderSidebar({ relay: true })
     const group = await screen.findByTestId('crew-group-inst-a')
-    await waitFor(() => expect(rowIn(group, 'RELAY slot')).not.toBeNull())
+    await waitFor(() => expect(rowIn(group, 'REMOTE peer row')).not.toBeNull())
 
-    fireEvent.change(screen.getByPlaceholderText(S.search_sessions), { target: { value: 'RELAY' } })
-    await waitFor(() => expect(rowIn(group, 'RELAY slot')).not.toBeNull())
-    expect(screen.queryByText('LOCAL plain slot')).toBeNull()
+    fireEvent.change(screen.getByPlaceholderText(S.search_sessions), { target: { value: 'REMOTE' } })
+    await waitFor(() => expect(screen.queryByText('LOCAL plain slot')).toBeNull())
+    expect(rowIn(group, 'REMOTE peer row')).not.toBeNull()
+    expect(screen.queryByText('RELAY slot')).toBeNull()
     expect(screen.queryByText(S.no_sessions_match)).toBeNull()
   })
 
@@ -249,70 +241,48 @@ describe('ChatSidebar – per-machine groups', () => {
     renderSidebar({ relay: true, relayParent: true })
     await screen.findByTestId('conductor-view-lane')
     const group = await screen.findByTestId('crew-group-inst-a')
-    await waitFor(() => expect(rowIn(group, 'RELAY slot')).not.toBeNull())
+    await waitFor(() => expect(rowIn(group, 'REMOTE peer row')).not.toBeNull())
 
-    fireEvent.change(screen.getByPlaceholderText(S.search_sessions), { target: { value: 'RELAY' } })
+    fireEvent.change(screen.getByPlaceholderText(S.search_sessions), { target: { value: 'REMOTE' } })
     await waitFor(() => expect(screen.queryByText('LOCAL plain slot')).toBeNull())
-    expect(rowIn(group, 'RELAY slot')).not.toBeNull()
+    expect(rowIn(group, 'REMOTE peer row')).not.toBeNull()
     expect(screen.queryByText(S.no_sessions_match)).toBeNull()
   })
 
-  it('opens a collapsed crew group to reveal a session a search was hiding', async () => {
-    localStorage.setItem(PREVIEW_INSTANCE_SESSIONS, '1')
-    const { store } = renderSidebar({ relay: true })
-    const group = await screen.findByTestId('crew-group-inst-a')
-    await waitFor(() => expect(rowIn(group, 'RELAY slot')).not.toBeNull())
-    const toggle = screen.getByTestId('crew-group-toggle-inst-a')
-    fireEvent.click(toggle)
-    fireEvent.change(screen.getByPlaceholderText(S.search_sessions), { target: { value: 'plain' } })
-    await waitFor(() => expect(screen.queryByTestId('crew-group-inst-a')).toBeNull())
-
-    act(() => { store.dispatch(requestSlotReveal('s-relay')) })
-    await waitFor(() => expect(screen.getByTestId('crew-group-toggle-inst-a')).toHaveAttribute('aria-expanded', 'true'))
-  })
-
-  it('hides a crew-group row whose folder the folder filter hides', async () => {
+  it('hides an archive whose folder the folder filter hides', async () => {
     localStorage.setItem(PREVIEW_INSTANCE_SESSIONS, '1')
     localStorage.setItem('mc-flat-hidden-folders', JSON.stringify(['f-hidden']))
     chatFoldersMock.mockResolvedValue([{ id: 'f-hidden', name: 'Hidden', parent_id: null, collapsed: false, order: 0 }])
     renderSidebar({ relay: true, relayFolder: 'f-hidden' })
     const group = await screen.findByTestId('crew-group-inst-a')
     await waitFor(() => expect(rowIn(group, 'REMOTE peer row')).not.toBeNull())
-    expect(rowIn(group, 'RELAY slot')).toBeNull()
+    expect(screen.getByText('LOCAL plain slot')).toBeInTheDocument()
+    expect(screen.queryByText('RELAY slot')).toBeNull()
   })
 
   it('shows a crew\'s tunnel error through the shared error notice', async () => {
+    // The group outlives the error only through the peer rows cached while it
+    // was connected: an archive under Local owns no group.
     localStorage.setItem(PREVIEW_INSTANCE_SESSIONS, '1')
+    const { qc } = renderSidebar({ relay: true })
+    const group = await screen.findByTestId('crew-group-inst-a')
+    await waitFor(() => expect(rowIn(group, 'REMOTE peer row')).not.toBeNull())
     listInstancesMock.mockResolvedValue({ instances: [{ ...crew('error'), status: { state: 'error', error: 'ssh: connect timed out' } }] })
-    renderSidebar({ relay: true })
-    expect(await screen.findByTestId('crew-group-badge-inst-a')).toHaveTextContent(S.crew_status_error)
+    await act(async () => { await qc.invalidateQueries({ queryKey: ['instances'] }) })
+    await waitFor(() => expect(screen.getByTestId('crew-group-badge-inst-a')).toHaveTextContent(S.crew_status_error))
     const notice = await screen.findByTestId('crew-group-error-inst-a')
     expect(notice).toHaveAttribute('role', 'alert')
     expect(notice).toHaveTextContent('ssh: connect timed out')
   })
 
-  it('keeps an open relay-slot rename and its draft across a crew disconnect', async () => {
+  it('badges a reconnecting crew and an erroring one from the tunnel state', async () => {
     localStorage.setItem(PREVIEW_INSTANCE_SESSIONS, '1')
     const { qc } = renderSidebar({ relay: true })
     const group = await screen.findByTestId('crew-group-inst-a')
-    await waitFor(() => expect(rowIn(group, 'RELAY slot')).not.toBeNull())
-
-    fireEvent.doubleClick(within(group).getByText('RELAY slot'), { detail: 2 })
-    const editor = within(group).getByRole('textbox')
-    fireEvent.change(editor, { target: { value: 'half-typed title' } })
-
-    listInstancesMock.mockResolvedValue({ instances: [crew('disconnected')] })
-    await act(async () => { await qc.invalidateQueries({ queryKey: ['instances'] }) })
-    await waitFor(() => expect(screen.getByTestId('crew-group-inst-a')).toHaveAttribute('data-offline'))
-
-    expect(within(screen.getByTestId('crew-group-inst-a')).getByRole('textbox')).toHaveValue('half-typed title')
-  })
-
-  it('badges a reconnecting crew and an erroring one from the tunnel state', async () => {
-    localStorage.setItem(PREVIEW_INSTANCE_SESSIONS, '1')
+    await waitFor(() => expect(rowIn(group, 'REMOTE peer row')).not.toBeNull())
     listInstancesMock.mockResolvedValue({ instances: [crew('connecting')] })
-    renderSidebar({ relay: true })
-    expect(await screen.findByTestId('crew-group-badge-inst-a')).toHaveTextContent(S.crew_status_reconnecting)
+    await act(async () => { await qc.invalidateQueries({ queryKey: ['instances'] }) })
+    await waitFor(() => expect(screen.getByTestId('crew-group-badge-inst-a')).toHaveTextContent(S.crew_status_reconnecting))
   })
 
   it('renders the same sidebar as the flag-off one when no crew has a group', async () => {

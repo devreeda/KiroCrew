@@ -11503,6 +11503,11 @@
         "retry": "Reintentar",
         "running_on_header": "En {{name}}",
         "approval_elsewhere": "El agente en {{name}} espera una aprobación que esta ventana no puede responder. Respóndela en el panel propio de la tripulación."
+      },
+      "relayArchive": {
+        "notice": "Este chat se ejecutó en {{name}}. Ahora es de solo lectura. Abre la propia sesión del Crew para continuar.",
+        "placeholder": "Solo lectura",
+        "open": "Abrir en {{name}}"
       }
     },
     "chatPage": {
@@ -11772,7 +11777,6 @@
       "new_chat_in_folder": "Nuevo chat en la carpeta",
       "new_chat_on_crew": "Nuevo chat en un Crew",
       "creating_on_crew": "Iniciando chat en {{name}}…",
-      "runs_on_crew": "Se ejecuta en {{name}} — un Crew conectado, no en esta máquina",
       "new_chat_in_name": "Nuevo chat en {{name}}",
       "new_chat_session": "Nueva sesión de chat",
       "new_folder": "Nueva carpeta",
@@ -11924,6 +11928,7 @@
       "crew_row_offline": "Sin conexión en este momento",
       "not_open_here_yet": "En {{name}} — haz clic para abrirla aquí",
       "on_instance": "En {{name}}",
+      "ran_on_instance": "Se ejecutó en {{name}}",
       "opens_here_runs_on_instance": "Abre esta sesión aquí — su ejecución sigue en {{name}}",
       "opens_on_members_page": "El hilo propio de un miembro de la tripulación: se abre en la página Miembros",
       "members_page_chip": "Página Miembros",

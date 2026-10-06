@@ -2075,15 +2075,16 @@ const SessionRow = memo(function SessionRow({
                   <ChannelBrandIcon channel={link.channel} size={10} />
                 </span>
               ))}
-              {/* Runs-elsewhere marker, first in the strip for the same reason it
-               *  is first on a federated search row: it qualifies the whole row,
-               *  so a user scanning the list should meet it before the per-session
-               *  flags that only make sense once you know where the session is. */}
+              {/* Ran-elsewhere marker on a read-only crew archive, first in the
+               *  strip for the same reason it is first on a federated search row:
+               *  it qualifies the whole row, so a user scanning the list should
+               *  meet it before the per-session flags. Past tense: the chat no
+               *  longer runs there, and its tooltip says where to keep going. */}
               {s.executor === 'remote' && !inCrewGroup && (
                 <RemoteCrewChip
                   name={remoteCrewName}
-                  label={i18nT('pages.chatSidebar.on_instance', { name: remoteCrewName })}
-                  title={i18nT('pages.chatSidebar.runs_on_crew', { name: remoteCrewName })}
+                  label={i18nT('pages.chatSidebar.ran_on_instance', { name: remoteCrewName })}
+                  title={i18nT('pages.chat.relayArchive.notice', { name: remoteCrewName })}
                 />
               )}
               {s.memory_mode === 'incognito' && <span className="text-muted" title={i18nT('pages.chatSidebar.incognito_no_memory_writes')}><EyeOff size={10} /></span>}
@@ -3026,10 +3027,10 @@ function ChatSidebar({
   },
     [allRows, filterDimensions, laneOrder, dragFrozen]
   )
-  // Per-machine groups (preview): a row a crew owns, or a local slot whose turns
-  // run on it, leaves the Local lanes and renders under that crew's group, in the
-  // same filtered order. The board keeps every row in its columns, so it groups
-  // nothing.
+  // Per-machine groups (preview): a row a crew owns leaves the Local lanes and
+  // renders under that crew's group, in the same filtered order. A local chat
+  // that once ran on a crew is a read-only archive and stays under Local. The
+  // board keeps every row in its columns, so it groups nothing.
   const shownCrewGroups = orderedColumns.length > 0 ? NO_CREW_GROUPS : crewGroups
   const crewRowsById = useMemo(() => {
     const byCrew = new Map<string, Slot[]>(shownCrewGroups.map(g => [g.id, []]))
@@ -3044,7 +3045,7 @@ function ChatSidebar({
     () => (crewRowsById.size === 0 ? filteredSlots : filteredSlots.filter(s => !crewRowsById.has(crewOf(s) ?? ''))),
     [crewRowsById, filteredSlots],
   )
-  const [collapsedCrews, toggleCrewCollapsed, expandCrew] = useCollapsedCrews()
+  const [collapsedCrews, toggleCrewCollapsed] = useCollapsedCrews()
 
   const { hoverPinRef, heldDisplacedRef, releaseHoverPin, heldLane, onRootPointerOver } = useHoverHold()
 
@@ -3167,14 +3168,6 @@ function ChatSidebar({
     () => [...shownCrewRows.values()].reduce((n, rows) => n + rows.length, 0),
     [shownCrewRows],
   )
-  // Reveal opens the crew group holding the target, then the lane's own ancestors.
-  // Looked up in `allRows`: the reveal may be clearing the filter that hides it.
-  const expandRevealAncestors = useCallback((identity: string) => {
-    const row = allRows.find(s => sessionRowIdentity(s) === identity)
-    const crew = row ? crewOf(row) : undefined
-    if (crew && crewRowsById.has(crew)) expandCrew(crew)
-    expandConductorAncestors(identity)
-  }, [allRows, crewRowsById, expandCrew, expandConductorAncestors])
 
   const {
     availableLanes, nextLane, laneSwitchLabel, cycleLane,
@@ -3220,7 +3213,7 @@ function ChatSidebar({
 
   const {
     revealFlash,
-  } = useSidebarReveal({ sidebarRootRef, dispatch, localSlots, revealBlockingFilters, staleCollapseMs, sortKey, isStaleExempt, slotFolders, setStaleExpanded, expandFolderAncestors, expandConductorAncestors: expandRevealAncestors, folders, setSlotFilter, setFilterHiddenFolders, setRevealForcedVisible, setFlatView })
+  } = useSidebarReveal({ sidebarRootRef, dispatch, localSlots, revealBlockingFilters, staleCollapseMs, sortKey, isStaleExempt, slotFolders, setStaleExpanded, expandFolderAncestors, expandConductorAncestors, folders, setSlotFilter, setFilterHiddenFolders, setRevealForcedVisible, setFlatView })
   const renameCommit = useCallback((id: string, name: string) => {
     if (name.trim()) updateFolderMutation.mutate({ id, body: { name: name.trim() } })
     setEditingId(null)

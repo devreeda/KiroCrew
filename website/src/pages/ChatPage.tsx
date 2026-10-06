@@ -48,6 +48,7 @@ import { addNotification, removeNotificationByTs } from '../store/notificationsS
 import { useDeleteTerminalSession } from '../components/CliPanel'
 import { interceptSlashCommand, isInterceptedSlashCommand } from './chat/ChatInput'
 import { updateSlot, slotIsRemoteBound } from '../store/dashboardSlice'
+import { RelayArchiveNotice } from './chat/RelayArchiveNotice'
 import { inFlightSlotSwitchOutcome, performSlotSwitch, stagedSlotSwitchTarget } from '../lib/slotSwitch'
 import { performAgentSlotSwitch } from '../lib/agentSwitch'
 import { api } from '../api/client'
@@ -1837,6 +1838,10 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // message with no recovery path is the offline-UX regression we're
     // guarding against. Cheap belt-and-braces.
     if (!connected) return false
+    // A chat that ran on a crew is a read-only archive. The disabled composer is
+    // not the only caller (follow-up chips, quick send, hotkeys), so refuse here,
+    // before the draft is cleared, for every path into a send.
+    if (slotIsRemoteBound(boundStore.getState().dashboard.slots.find(s => s.key === (targetSlot ?? activeSlotRef.current)))) return false
     const raw = (isolated ? optionText ?? '' : optionText || inputRef.current).trim()
     // App launches own only their explicit text, not the composer's staged data.
     const widgetOrigin = !isolated && !!widgetPrefillRef.current && raw.includes(widgetPrefillRef.current)
@@ -5189,7 +5194,6 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       color_index: old?.color_index ?? null,
       color_hex: old?.color_hex ?? null,
       project: old?.project ?? null,
-      instanceId: old?.instance_id || undefined,
     }
     try { await dispatch(createSlot(opts)).unwrap() } catch (error) {
       showActionError(errMessage(error) || i18nT('pages.chatPage.unknown_error'))
@@ -6112,6 +6116,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                   reads as a generic error rather than "this is the answer to
                   the button you just pressed" — a first-time reader then
                   concludes the click did nothing and presses again. */}
+              {activeSlotRemoteBound && currentSlot?.instance_id && <RelayArchiveNotice instanceId={currentSlot.instance_id} rowIdentity={currentSlot.row_identity} />}
               {refusedPress && (
                 <div
                   className="px-4 mb-1.5 mx-auto w-full"
@@ -6226,13 +6231,13 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               // nothing makes.
               jevAutoAvailable={jevAutoConsented && !!slotRunning}
               onFollowUpSend={(text?: string) => send(text)}
-              disabled={
-                /* Streaming, compaction, and stopping all
-                   keep the input interactive: api_chat queues on slot.running and
-                   stop preserves the queue, so typing + Enter queues a
-                   follow-up during the stop window instead of being silently blocked. */
-                false
-              }
+              /* Streaming, compaction, and stopping all keep the input
+                 interactive: api_chat queues on slot.running and stop preserves
+                 the queue, so typing + Enter queues a follow-up during the stop
+                 window instead of being silently blocked. Only a chat that ran
+                 on a crew is read-only: the notice above says where to go on. */
+              disabled={activeSlotRemoteBound}
+              placeholder={activeSlotRemoteBound ? i18nT('pages.chat.relayArchive.placeholder') : undefined}
               autoFocusKey={activeSlot}
               prefillHint={prefillHint}
               onDismissHint={() => setPrefillHint(false)}

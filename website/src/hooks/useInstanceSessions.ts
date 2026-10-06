@@ -246,17 +246,17 @@ export interface CrewGroup {
   error?: string
 }
 
-/** The crew a sidebar row belongs to: the peer that owns it, or the crew a
- *  local slot's turns run on. `undefined` for an ordinary local row. */
-export function crewOf(row: { peer_id?: string; executor?: string; instance_id?: string }): string | undefined {
-  if (row.peer_id) return row.peer_id
-  return row.executor === 'remote' && row.instance_id ? row.instance_id : undefined
+/** The crew a sidebar row belongs to: the peer that owns it. `undefined` for
+ *  every local row, including a chat that once ran on a crew: that one is a
+ *  read-only archive and lives under Local. */
+export function crewOf(row: { peer_id?: string }): string | undefined {
+  return row.peer_id || undefined
 }
 
 /** The crew groups to render, in the instance list's order. A crew gets a group
  *  when it can be listed right now, or when some row belongs to it (cached peer
- *  rows, or a local slot running there). Crews with neither get no group, so
- *  with nothing connected and nothing bound the sidebar has no groups at all. */
+ *  rows). Crews with neither get no group, so with nothing connected and no
+ *  cached peer rows the sidebar has no groups at all. */
 export function crewGroupsFor(
   instances: readonly InstanceView[],
   rows: readonly { peer_id?: string; executor?: string; instance_id?: string }[],

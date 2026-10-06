@@ -5012,6 +5012,11 @@
         "retry": "Retry",
         "running_on_header": "On {{name}}",
         "approval_elsewhere": "The agent on {{name}} is waiting for an approval this window cannot answer. Answer it on the crew's own dashboard."
+      },
+      "relayArchive": {
+        "notice": "This chat ran on {{name}}. It is read-only now. Open the crew's own session to keep going.",
+        "placeholder": "Read-only",
+        "open": "Open on {{name}}"
       }
     },
     "chatPage": {
@@ -5126,6 +5131,7 @@
       "loop_waiting_title_cycle_2": "Paused at cycle {{count}} — the last reply asked you to choose. Open the session to answer.",
       "not_open_here_yet": "On {{name}} — click to open here",
       "on_instance": "On {{name}}",
+      "ran_on_instance": "Ran on {{name}}",
       "opens_here_runs_on_instance": "Opens this session here — its turns keep running on {{name}}",
       "opens_on_members_page": "A crew member's own thread — opens on the Members page",
       "members_page_chip": "Members page",
@@ -5160,7 +5166,6 @@
       "show_hidden_folder_one": "Show {{count}} hidden folder",
       "show_hidden_folder_other": "Show {{count}} hidden folders",
       "sub_agent_needs_approval_one": "{{count}} sub-agent needs approval",
-      "runs_on_crew": "Runs on {{name}} — a connected crew, not this machine",
       "sub_agent_needs_approval_other": "{{count}} sub-agents need approval",
       "switch_failed": "Switch failed",
       "switch_to_board_view": "Switch to board view",

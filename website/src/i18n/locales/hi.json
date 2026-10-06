@@ -11343,6 +11343,11 @@
         "retry": "फिर से कोशिश करो",
         "running_on_header": "{{name}} पर",
         "approval_elsewhere": "{{name}} पर एजेंट एक ऐसी स्वीकृति की प्रतीक्षा कर रहा है जिसका जवाब यह विंडो नहीं दे सकती। क्रू के अपने डैशबोर्ड पर जवाब दो।"
+      },
+      "relayArchive": {
+        "notice": "यह चैट {{name}} पर चली थी। अब यह केवल-पढ़ने योग्य है। जारी रखने के लिए Crew का अपना सत्र खोलो।",
+        "placeholder": "केवल-पढ़ने योग्य",
+        "open": "{{name}} पर खोलो"
       }
     },
     "chatPage": {
@@ -11607,7 +11612,6 @@
       "new_chat_in_folder": "फ़ोल्डर में नई चैट",
       "new_chat_on_crew": "Crew पर नई चैट",
       "creating_on_crew": "{{name}} पर चैट शुरू हो रही है…",
-      "runs_on_crew": "{{name}} पर चलता है — एक कनेक्टेड Crew, इस मशीन पर नहीं",
       "new_chat_in_name": "{{name}} में नई चैट",
       "new_chat_session": "नया चैट सत्र",
       "new_folder": "नया फ़ोल्डर",
@@ -11749,6 +11753,7 @@
       "crew_row_offline": "अभी कनेक्ट नहीं है",
       "not_open_here_yet": "{{name}} पर — यहाँ खोलने के लिए क्लिक करें",
       "on_instance": "{{name}} पर",
+      "ran_on_instance": "{{name}} पर चली थी",
       "opens_here_runs_on_instance": "इस सत्र को यहाँ खोलता है — इसका निष्पादन {{name}} पर चलता रहता है",
       "opens_on_members_page": "क्रू सदस्य का अपना थ्रेड — सदस्य पेज पर खुलता है",
       "members_page_chip": "सदस्य पेज",
